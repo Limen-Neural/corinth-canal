@@ -16,19 +16,19 @@ serde = { version = "1.0", features = ["derive"] }
 zmq = "0.10"
 
 # Add your custom Candle-free tensor dependencies here
-spikenaut-telemetry = { workspace = true }
-spikenaut-encoder   = { workspace = true }
-neuromod            = { workspace = true }
-spikenaut-spine     = { workspace = true }
+spikenaut-telemetry = { path = "../spikenaut-telemetry" }
+spikenaut-encoder   = { path = "../spikenaut-encoder" }
+neuromod            = { path = "../neuromod" }
+spikenaut-spine     = { path = "../spikenaut-spine" }
 
 # ── Serialisation / Utility ────────────────────────────────────────────────────
-serde_json = { workspace = true }
-thiserror  = { workspace = true }
+serde_json = "1.0"
+thiserror  = "2"
 safetensors = { version = "0.4", optional = true }
 
 [dev-dependencies]
 # examples only — no extra overhead in the lib
-serde_json = { workspace = true }
+serde_json = "1.0"
 
 # ── Feature flags ──────────────────────────────────────────────────────────────
 [features]
@@ -44,3 +44,5 @@ spine-zmq   = ["spikenaut-spine/zmq"]
 opt-level     = 3
 lto           = true
 codegen-units = 1
+
+[workspace]
