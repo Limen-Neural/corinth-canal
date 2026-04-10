@@ -56,6 +56,28 @@ OLMOE_PATH=/models/OLMoE-1B-7B-Q5_K_M.gguf \
   cargo run --example telemetry_bridge --features gguf --release
 ```
 
+## CSV Replay Contract
+
+`corinth-canal` consumes canonical CSV exported by `gaming-telemetry`:
+
+`timestamp_ms,gpu_temp_c,gpu_power_w,cpu_tctl_c,cpu_package_power_w`
+
+Producer/consumer flow:
+
+`collector -> gpu_telemetry_v1_batch_N.parquet -> export_csv -> csv_replay`
+
+Replay command:
+
+```bash
+cargo run --example csv_replay /path/to/canonical.csv
+```
+
+`csv_replay` validates the header strictly, counts malformed rows, and prints:
+- `rows_processed`
+- `rows_skipped`
+- `global_step`
+- `olmoe_loaded`
+
 ## Project layout
 
 | Path | Responsibility |
@@ -70,6 +92,7 @@ OLMOE_PATH=/models/OLMoE-1B-7B-Q5_K_M.gguf \
 | `src/hybrid/olmoe.rs` | GGUF-aware OLMoE simulation |
 | `src/hybrid/hybrid.rs` | deterministic front-end + projector + OLMoE orchestration |
 | `examples/telemetry_bridge.rs` | end-to-end standalone example |
+| `examples/csv_replay.rs` | canonical CSV replay adapter |
 
 ## Acknowledgments
 

@@ -3,15 +3,31 @@
 //! Canonical CSV format: timestamp_ms,gpu_temp_c,gpu_power_w,cpu_tctl_c,cpu_package_power_w
 
 use corinth_canal::{
-    EMBEDDING_DIM, HybridConfig, HybridModel, OlmoeExecutionMode, ProjectionMode,
+    EMBEDDING_DIM, HybridConfig, HybridError, HybridModel, OlmoeExecutionMode, ProjectionMode,
     TelemetrySnapshot,
 };
+
+const EXPECTED_HEADER: &str =
+    "timestamp_ms,gpu_temp_c,gpu_power_w,cpu_tctl_c,cpu_package_power_w";
+
+fn parse_u64(v: &str) -> Option<u64> {
+    v.parse::<u64>().ok()
+}
+
+fn parse_f32(v: &str) -> Option<f32> {
+    let n = v.parse::<f32>().ok()?;
+    if n.is_finite() {
+        Some(n)
+    } else {
+        None
+    }
+}
 
 fn main() -> corinth_canal::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!("Usage: cargo run --example csv_replay <telemetry.csv>");
-        eprintln!("  CSV format: timestamp_ms,gpu_temp_c,gpu_power_w,cpu_tctl_c,cpu_package_power_w");
+        eprintln!("  CSV format: {}", EXPECTED_HEADER);
         std::process::exit(1);
     }
 
@@ -34,30 +50,59 @@ fn main() -> corinth_canal::Result<()> {
         model.config().olmoe_execution_mode
     );
 
-    // Parse CSV
     let csv_content = std::fs::read_to_string(csv_path)?;
     let mut lines = csv_content.lines();
 
-    // Skip header
-    let header = lines.next().ok_or("Empty CSV file")?;
-    if !header.contains("timestamp_ms") {
-        eprintln!("Warning: CSV header may be missing expected columns");
+    let header = lines
+        .next()
+        .ok_or_else(|| HybridError::InvalidConfig("empty CSV file".to_owned()))?
+        .trim();
+
+    if header != EXPECTED_HEADER {
+        return Err(HybridError::InvalidConfig(format!(
+            "invalid CSV header: expected '{EXPECTED_HEADER}', got '{header}'"
+        )));
     }
 
     let mut total_loss = 0.0_f32;
-    let mut row_count = 0_usize;
+    let mut rows_processed = 0_usize;
+    let mut rows_skipped = 0_usize;
 
-    for line in lines {
-        let fields: Vec<&str> = line.split(',').collect();
-        if fields.len() < 5 {
-            continue; // Skip malformed lines
+    for (idx, raw_line) in lines.enumerate() {
+        let line_number = idx + 2;
+        let line = raw_line.trim();
+
+        if line.is_empty() {
+            rows_skipped += 1;
+            continue;
         }
 
-        let timestamp_ms: u64 = fields[0].parse().unwrap_or(0);
-        let gpu_temp_c: f32 = fields[1].parse().unwrap_or(0.0);
-        let gpu_power_w: f32 = fields[2].parse().unwrap_or(0.0);
-        let cpu_tctl_c: f32 = fields[3].parse().unwrap_or(0.0);
-        let cpu_package_power_w: f32 = fields[4].parse().unwrap_or(0.0);
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.len() != 5 {
+            rows_skipped += 1;
+            eprintln!(
+                "Skipping malformed row {}: expected 5 columns, got {}",
+                line_number,
+                fields.len()
+            );
+            continue;
+        }
+
+        let parsed = (
+            parse_u64(fields[0]),
+            parse_f32(fields[1]),
+            parse_f32(fields[2]),
+            parse_f32(fields[3]),
+            parse_f32(fields[4]),
+        );
+
+        let (Some(timestamp_ms), Some(gpu_temp_c), Some(gpu_power_w), Some(cpu_tctl_c), Some(cpu_package_power_w)) =
+            parsed
+        else {
+            rows_skipped += 1;
+            eprintln!("Skipping malformed row {}: parse/finite check failed", line_number);
+            continue;
+        };
 
         let snap = TelemetrySnapshot {
             timestamp_ms,
@@ -69,7 +114,6 @@ fn main() -> corinth_canal::Result<()> {
 
         let output = model.forward(&snap)?;
 
-        // Calculate simple loss against mean embedding
         let mean_embed = output.embedding.iter().sum::<f32>() / EMBEDDING_DIM as f32;
         let target = vec![mean_embed * 0.9; EMBEDDING_DIM];
         let loss = output
@@ -79,26 +123,30 @@ fn main() -> corinth_canal::Result<()> {
             .map(|(hidden, expected)| (hidden - expected).powi(2))
             .sum::<f32>()
             / EMBEDDING_DIM as f32;
-        total_loss += loss;
-        row_count += 1;
 
-        // Per-step diagnostics
-        if row_count % 100 == 0 || row_count <= 5 {
+        total_loss += loss;
+        rows_processed += 1;
+
+        if rows_processed % 100 == 0 || rows_processed <= 5 {
             println!(
                 "step={:>4} gpu_temp={:5.1}C gpu_power={:6.1}W cpu_temp={:5.1}C loss={:.6}",
-                row_count, gpu_temp_c, gpu_power_w, cpu_tctl_c, loss
+                rows_processed, gpu_temp_c, gpu_power_w, cpu_tctl_c, loss
             );
         }
     }
 
-    // Final summary
-    let avg_loss = if row_count > 0 { total_loss / row_count as f32 } else { 0.0 };
+    let avg_loss = if rows_processed > 0 {
+        total_loss / rows_processed as f32
+    } else {
+        0.0
+    };
 
     println!("\n=== Replay Summary ===");
-    println!("Rows processed: {}", row_count);
-    println!("Avg loss: {:.6}", avg_loss);
-    println!("Global step: {}", model.global_step());
-    println!("OLMoE loaded: {}", model.olmoe_loaded());
+    println!("rows_processed={}", rows_processed);
+    println!("rows_skipped={}", rows_skipped);
+    println!("avg_loss={:.6}", avg_loss);
+    println!("global_step={}", model.global_step());
+    println!("olmoe_loaded={}", model.olmoe_loaded());
 
     Ok(())
 }
