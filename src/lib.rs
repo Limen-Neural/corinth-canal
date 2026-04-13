@@ -32,12 +32,14 @@
 
 pub mod error;
 pub mod hybrid;
+pub mod telemetry;
 pub mod tensor;
 pub mod transformer;
 pub mod types;
 
 pub use error::{HybridError, Result};
 pub use hybrid::{HybridModel, OLMoE, Projector};
+pub use telemetry::TelemetryEncoder;
 pub use types::{
     EMBEDDING_DIM, HybridConfig, HybridOutput, OlmoeExecutionMode, ProjectionMode,
     TelemetrySnapshot,

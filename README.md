@@ -8,10 +8,17 @@ Standalone SNN-logic quantization crate focused on the spiking projector and OLM
 
 `corinth-canal` keeps the real projector and OLMoE simulation logic, while the old telemetry/SNN front-end is replaced by a deterministic in-repo spike generator. That keeps the crate self-contained and runnable from a fresh clone.
 
+## Origin
+
+This repository originated from the `spikenaut-hybrid` codebase and was reorganized into `corinth-canal` with a consolidated `src/hybrid`, `src/tensor`, and `src/transformer` structure.
+
 ## Architecture
 
 ```text
 TelemetrySnapshot
+       |
+       v  TelemetryEncoder (delta modulation)
+[i8; 4] ternary spikes (+1/0/-1)
        |
        v  deterministic dummy spike generator
 spike_train + membrane_potentials
@@ -26,15 +33,69 @@ expert_weights + selected_experts + hidden
 ## Quick start
 
 ```rust
-use corinth_canal::{HybridConfig, HybridModel, TelemetrySnapshot};
+use corinth_canal::{HybridConfig, HybridModel, TelemetryEncoder, TelemetrySnapshot};
 
+// Configure delta modulation thresholds
+let thresholds = [1.0, 5.0, 1.0, 5.0];
+let mut encoder = TelemetryEncoder::new(thresholds);
+
+// Create a telemetry snapshot
+let snap = TelemetrySnapshot {
+    gpu_temp_c: 60.0,
+    gpu_power_w: 260.0,
+    cpu_tctl_c: 77.0,
+    cpu_package_power_w: 153.0,
+    timestamp_ms: 0,
+};
+
+// Encode into ternary spikes
+let spikes = encoder.encode(&snap);
+
+// Or use the full hybrid pipeline
 let cfg = HybridConfig::default();
 let mut model = HybridModel::new(cfg)?;
-
-let snap = TelemetrySnapshot::default();
 let output = model.forward(&snap)?;
 
 println!("Selected experts: {:?}", output.selected_experts);
+```
+
+## TelemetryEncoder
+
+The `TelemetryEncoder` converts continuous telemetry values into ternary spike vectors using delta modulation. This bridges raw telemetry data into the spiking projection path.
+
+### Delta modulation
+
+For each telemetry channel (GPU temp, GPU power, CPU temp, CPU power), the encoder:
+
+- Stores a baseline value (seeded from the first sample)
+- Compares each new value to its baseline
+- Emits `+1` if the change exceeds the positive threshold
+- Emits `-1` if the change exceeds the negative threshold
+- Emits `0` otherwise
+- Updates the baseline only when a spike fires
+
+### Usage
+
+```rust
+use corinth_canal::{TelemetryEncoder, TelemetrySnapshot};
+
+// Configure thresholds: [temp, power, temp, power]
+let thresholds = [1.0, 5.0, 1.0, 5.0];
+let mut encoder = TelemetryEncoder::new(thresholds);
+
+let snap = TelemetrySnapshot {
+    gpu_temp_c: 60.0,
+    gpu_power_w: 260.0,
+    cpu_tctl_c: 77.0,
+    cpu_package_power_w: 153.0,
+    timestamp_ms: 0,
+};
+
+// First call seeds the baseline, returns [0, 0, 0, 0]
+let spikes = encoder.encode(&snap);
+
+// Subsequent calls emit spikes based on delta
+let spikes = encoder.encode(&snap);
 ```
 
 ## Features
@@ -86,8 +147,10 @@ cargo run --example csv_replay /path/to/canonical.csv
 | `src/lib.rs` | public API and crate docs |
 | `src/types.rs` | `TelemetrySnapshot`, config, enums, output types |
 | `src/error.rs` | `HybridError`, `Result` |
+| `src/telemetry.rs` | `TelemetryEncoder` delta-modulation state machine |
 | `src/tensor/mod.rs` | candle-free tensor utilities |
 | `src/transformer/mod.rs` | transformer helpers |
+| `src/hybrid/mod.rs` | hybrid module switchboard |
 | `src/hybrid/projector.rs` | 2-bit spiking projector logic |
 | `src/hybrid/olmoe.rs` | GGUF-aware OLMoE simulation |
 | `src/hybrid/hybrid.rs` | deterministic front-end + projector + OLMoE orchestration |

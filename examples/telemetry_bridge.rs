@@ -27,6 +27,11 @@ fn main() -> corinth_canal::Result<()> {
     };
 
     let mut model = HybridModel::new(cfg)?;
+    println!(
+        "olmoe_loaded={} olmoe_mode={:?}",
+        model.olmoe_loaded(),
+        model.config().olmoe_execution_mode
+    );
     let mut total_loss = 0.0_f32;
 
     for step in 0..25usize {
