@@ -112,12 +112,13 @@ impl Projector {
         let fan_in = feature_dim as f32;
         let fan_out = EMBEDDING_DIM as f32;
         let limit = (6.0_f32 / (fan_in + fan_out)).sqrt();
+        const GOLDEN_RATIO_FRAC: f32 = 1.618_034;
 
         // Deterministic Xavier-uniform init (no external rng dep needed).
         let mut weights = Vec::with_capacity(EMBEDDING_DIM * feature_dim);
         for i in 0..(EMBEDDING_DIM * feature_dim) {
             // Simple deterministic pseudo-random from index hash.
-            let t = ((i as f32 * 1.6180339887) % 1.0) * 2.0 - 1.0;
+            let t = ((i as f32 * GOLDEN_RATIO_FRAC) % 1.0) * 2.0 - 1.0;
             weights.push(t * limit);
         }
 
@@ -189,9 +190,8 @@ impl Projector {
         }
 
         // Update EMA for normalisation
-        for i in 0..self.snn_neurons {
-            self.rate_ema[i] =
-                self.ema_alpha * rates[i] + (1.0 - self.ema_alpha) * self.rate_ema[i];
+        for (ema, rate) in self.rate_ema.iter_mut().zip(rates.iter()) {
+            *ema = self.ema_alpha * *rate + (1.0 - self.ema_alpha) * *ema;
         }
 
         // 2. Temporal histogram bins (4 equal-width bins) [64 dims]
@@ -275,14 +275,14 @@ impl Projector {
     /// Dense W × f + b with tanh squash.  Used for all non-spiking modes.
     fn dense_linear_project(&self, features: &[f32]) -> Vec<f32> {
         let mut out = vec![0.0_f32; EMBEDDING_DIM];
-        for out_i in 0..EMBEDDING_DIM {
+        for (out_i, out_slot) in out.iter_mut().enumerate() {
             let mut acc = self.bias[out_i];
             let row_offset = out_i * self.feature_dim;
-            for in_j in 0..features.len().min(self.feature_dim) {
-                acc += self.weights[row_offset + in_j] * features[in_j];
+            for (in_j, feature) in features.iter().take(self.feature_dim).enumerate() {
+                acc += self.weights[row_offset + in_j] * *feature;
             }
             // Layer norm approximation: tanh squash keeps embedding bounded
-            out[out_i] = acc.tanh();
+            *out_slot = acc.tanh();
         }
         out
     }
@@ -300,20 +300,20 @@ impl Projector {
     fn spiking_linear_project(&mut self, features: &[f32]) -> Vec<f32> {
         let mut spikes = vec![0.0_f32; EMBEDDING_DIM];
         let activity_drive = features.iter().map(|v| v.abs()).fold(0.0_f32, f32::max);
-        for out_i in 0..EMBEDDING_DIM {
+        for (out_i, spike) in spikes.iter_mut().enumerate() {
             let mut acc = self.bias[out_i];
             let row_offset = out_i * self.feature_dim;
-            for in_j in 0..features.len().min(self.feature_dim) {
-                acc += self.weights[row_offset + in_j] * features[in_j];
+            for (in_j, feature) in features.iter().take(self.feature_dim).enumerate() {
+                acc += self.weights[row_offset + in_j] * *feature;
             }
             // GIF integration step
             let drive = (acc.tanh() * 0.5 + activity_drive * 0.5).clamp(-1.0, 1.0);
             self.membrane[out_i] = self.membrane[out_i] * self.decay + drive * 0.35;
             if self.membrane[out_i] > self.threshold {
-                spikes[out_i] = 1.0;
+                *spike = 1.0;
                 self.membrane[out_i] -= self.threshold;   // reset-with-refractory
             } else if self.membrane[out_i] < -self.threshold {
-                spikes[out_i] = -1.0;
+                *spike = -1.0;
                 self.membrane[out_i] += self.threshold;
             }
             // else spikes[out_i] remains 0.0

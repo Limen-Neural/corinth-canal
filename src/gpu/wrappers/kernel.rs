@@ -66,6 +66,7 @@ impl KernelModule {
                 "lif_step",
                 "lif_step_weighted",
                 "gif_step_weighted",
+                "gif_step_weighted_f16",
                 "spike_rate",
                 "reset_membrane",
                 "stdp_update",

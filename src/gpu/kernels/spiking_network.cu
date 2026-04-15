@@ -315,6 +315,61 @@ void gif_step_weighted(
     spikes_out[tid] = spike;
 }
 
+extern "C" __global__
+void gif_step_weighted_f16(
+    float* __restrict__        membrane,
+    float* __restrict__        adaptation,
+    const unsigned short* __restrict__ weights,
+    const float* __restrict__  input_spikes,
+    unsigned int* __restrict__ refract,
+    unsigned int* __restrict__ spikes_out,
+    int n_neurons,
+    int n_inputs)
+{
+    extern __shared__ float s_inputs[];
+
+    for (int i = threadIdx.x; i < n_inputs; i += blockDim.x)
+        s_inputs[i] = input_spikes[i];
+    __syncthreads();
+
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= n_neurons) return;
+
+    unsigned int ref = refract[tid];
+    float v = membrane[tid];
+    float a = adaptation[tid];
+    unsigned int spike = 0u;
+
+    if (ref > 0u) {
+        v = LIF_RESET;
+        refract[tid] = ref - 1u;
+        adaptation[tid] = a * GIF_ADAPTATION_DECAY;
+    } else {
+        a *= GIF_ADAPTATION_DECAY;
+
+        const unsigned short* w_row = weights + (long)tid * n_inputs;
+        float drive = 0.0f;
+        for (int j = 0; j < n_inputs; ++j) {
+            float w = __half2float(*reinterpret_cast<const __half*>(&w_row[j]));
+            drive = fmaf(w, s_inputs[j], drive);
+        }
+
+        v = v * GIF_LEAK + drive * GIF_DRIVE_SCALE - a * GIF_ADAPTATION_TERM;
+
+        float threshold = GIF_THRESHOLD_BASE + a * GIF_ADAPTATION_SCALE;
+        if (v >= threshold) {
+            spike = 1u;
+            v -= threshold * GIF_RESET_RATIO;
+            a += 1.0f;
+            refract[tid] = (unsigned int)LIF_REFRACT_TICK;
+        }
+        adaptation[tid] = a;
+    }
+
+    membrane[tid]   = v;
+    spikes_out[tid] = spike;
+}
+
 // ════════════════════════════════════════════════════════════════════
 //  spike_rate
 //

@@ -25,6 +25,7 @@ impl TelemetrySnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HybridConfig {
     pub olmoe_model_path: String,
+    pub gpu_synapse_tensor_name: String,
     pub num_experts: usize,
     pub top_k_experts: usize,
     pub olmoe_execution_mode: OlmoeExecutionMode,
@@ -36,6 +37,7 @@ impl Default for HybridConfig {
     fn default() -> Self {
         Self {
             olmoe_model_path: String::new(),
+            gpu_synapse_tensor_name: "blk.0.attn_q.weight".into(),
             num_experts: 8,
             top_k_experts: 1,
             olmoe_execution_mode: OlmoeExecutionMode::SpikingSim,
@@ -46,32 +48,22 @@ impl Default for HybridConfig {
 }
 
 /// Strategy used to convert spike activity into an OLMoE embedding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ProjectionMode {
     RateSum,
     TemporalHistogram,
     MembraneSnapshot,
+    #[default]
     SpikingTernary,
 }
 
-impl Default for ProjectionMode {
-    fn default() -> Self {
-        Self::SpikingTernary
-    }
-}
-
 /// Execution mode used by the OLMoE router.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum OlmoeExecutionMode {
     StubUniform,
     DenseSim,
+    #[default]
     SpikingSim,
-}
-
-impl Default for OlmoeExecutionMode {
-    fn default() -> Self {
-        Self::SpikingSim
-    }
 }
 
 /// Output of one `HybridModel::forward` pass.

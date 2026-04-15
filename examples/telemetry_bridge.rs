@@ -1,8 +1,7 @@
 //! Standalone demo for the deterministic dummy front-end.
 
 use corinth_canal::{
-    EMBEDDING_DIM, HybridConfig, HybridModel, OlmoeExecutionMode, ProjectionMode,
-    TelemetrySnapshot,
+    EMBEDDING_DIM, HybridConfig, HybridModel, OlmoeExecutionMode, ProjectionMode, TelemetrySnapshot,
 };
 
 fn main() -> corinth_canal::Result<()> {
@@ -19,6 +18,7 @@ fn main() -> corinth_canal::Result<()> {
 
     let cfg = HybridConfig {
         olmoe_model_path: model_path,
+        gpu_synapse_tensor_name: "blk.0.attn_q.weight".into(),
         snn_steps: 20,
         num_experts: 8,
         top_k_experts: 1,
@@ -61,7 +61,11 @@ fn main() -> corinth_canal::Result<()> {
                 "step={:>2} spikes={} top_expert={:?} loss={:.6}",
                 step + 1,
                 output.spike_train.iter().map(|s| s.len()).sum::<usize>(),
-                output.selected_experts.as_ref().and_then(|v| v.first()).copied(),
+                output
+                    .selected_experts
+                    .as_ref()
+                    .and_then(|v| v.first())
+                    .copied(),
                 loss
             );
         }

@@ -21,9 +21,16 @@ use tracing::warn;
 const SATSOLVER_BLOCK_SIZE: u32 = 256;
 const SATSOLVER_SHARED_MEM_BYTES: u32 = 0;
 const TEMPORAL_BLOCK_SIZE: u32 = 256;
-const TEMPORAL_GRID_SIZE: u32 = 8;  // 8 * 256 = 2048 exact for Blackwell alignment (N_NEURONS)
+const TEMPORAL_GRID_SIZE: u32 = 8; // 8 * 256 = 2048 exact for Blackwell alignment (N_NEURONS)
 const TEMPORAL_SHARED_MEM_BYTES: u32 = 0;
 const SNAPSHOT_CHANNELS: usize = 4;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SynapsePrecision {
+    None,
+    F32,
+    F16,
+}
 
 struct TemporalState {
     neuron_count: usize,
@@ -34,9 +41,12 @@ struct TemporalState {
     input_current: GpuBuffer<f32>,
     input_spikes: GpuBuffer<f32>,
     adaptation: GpuBuffer<f32>,
-    weights: GpuBuffer<f32>,
+    weights_f32: GpuBuffer<f32>,
+    weights_f16: Option<GpuBuffer<u16>>,
+    synapse_precision: SynapsePrecision,
+    synapse_signature: Option<String>,
     snapshot: GpuBuffer<f32>,
-    best_walker: GpuBuffer<u32>,  // persistent 1-element for SAAQ on-device reduction
+    best_walker: GpuBuffer<u32>, // persistent 1-element for SAAQ on-device reduction
 }
 
 /// Facade that owns a CUDA context and the compiled PTX modules.
@@ -145,9 +155,9 @@ impl GpuAccelerator {
             })?;
         }
 
-        stream.synchronize().map_err(|e| {
-            GpuError::LaunchFailed(format!("project_snapshot_current sync: {e:?}"))
-        })
+        stream
+            .synchronize()
+            .map_err(|e| GpuError::LaunchFailed(format!("project_snapshot_current sync: {e:?}")))
     }
 
     pub fn lif_step_tick(&mut self, neuron_count: usize) -> GpuResult<()> {
@@ -218,6 +228,14 @@ impl GpuAccelerator {
     /// Load synapse weight matrix for GIF weighted kernel. Must match neuron_count * n_inputs.
     /// Call after ensure_temporal_state or it will be overwritten on realloc.
     pub fn load_synapse_weights(&mut self, weights: &[f32]) -> GpuResult<()> {
+        self.load_synapse_weights_named("host-f32", weights)
+    }
+
+    pub fn load_synapse_weights_named(
+        &mut self,
+        signature: &str,
+        weights: &[f32],
+    ) -> GpuResult<()> {
         if !self.is_ready() {
             return Err(GpuError::NoGpu);
         }
@@ -229,12 +247,72 @@ impl GpuAccelerator {
         if weights.len() != expected {
             return Err(GpuError::MemoryError(format!(
                 "weights length mismatch: expected {} ({}x{}), got {}",
-                expected, state.neuron_count, state.n_inputs, weights.len()
+                expected,
+                state.neuron_count,
+                state.n_inputs,
+                weights.len()
             )));
         }
-        state.weights.upload(weights).map_err(|e| {
-            GpuError::MemoryError(format!("synapse weights upload failed: {e}"))
+        if state.synapse_precision == SynapsePrecision::F32
+            && state.synapse_signature.as_deref() == Some(signature)
+        {
+            return Ok(());
+        }
+        state
+            .weights_f32
+            .upload(weights)
+            .map_err(|e| GpuError::MemoryError(format!("synapse weights upload failed: {e}")))?;
+        state.synapse_precision = SynapsePrecision::F32;
+        state.synapse_signature = Some(signature.to_owned());
+        Ok(())
+    }
+
+    /// Load an FP16 synapse matrix directly from a CUDA-registered host slice.
+    /// Reuses the resident device weights if the same source signature is already loaded.
+    pub fn load_synapse_weights_f16_registered(
+        &mut self,
+        signature: &str,
+        weights: &[u16],
+    ) -> GpuResult<()> {
+        if !self.is_ready() {
+            return Err(GpuError::NoGpu);
+        }
+        let state = self
+            .temporal_state
+            .as_mut()
+            .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
+        let expected = state.neuron_count * state.n_inputs;
+        if weights.len() != expected {
+            return Err(GpuError::MemoryError(format!(
+                "f16 weights length mismatch: expected {} ({}x{}), got {}",
+                expected,
+                state.neuron_count,
+                state.n_inputs,
+                weights.len()
+            )));
+        }
+
+        if state.synapse_precision == SynapsePrecision::F16
+            && state.synapse_signature.as_deref() == Some(signature)
+        {
+            return Ok(());
+        }
+
+        let f16_weights = match state.weights_f16.as_mut() {
+            Some(weights_f16) => weights_f16,
+            None => {
+                state.weights_f16 = Some(GpuBuffer::<u16>::from_slice(&vec![0u16; expected])?);
+                state
+                    .weights_f16
+                    .as_mut()
+                    .expect("weights_f16 was just inserted")
+            }
+        };
+        f16_weights.upload(weights).map_err(|e| {
+            GpuError::MemoryError(format!("registered f16 synapse upload failed: {e}"))
         })?;
+        state.synapse_precision = SynapsePrecision::F16;
+        state.synapse_signature = Some(signature.to_owned());
         Ok(())
     }
 
@@ -246,29 +324,62 @@ impl GpuAccelerator {
         self.ensure_temporal_state(neuron_count)?;
 
         let modules = self.modules.as_ref().ok_or(GpuError::NoGpu)?;
-        let gif_step = modules.get_function("gif_step_weighted")?;
         let state = self
             .temporal_state
             .as_mut()
             .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
+        let gif_step = match state.synapse_precision {
+            SynapsePrecision::F32 => modules.get_function("gif_step_weighted")?,
+            SynapsePrecision::F16 => modules.get_function("gif_step_weighted_f16")?,
+            SynapsePrecision::None => {
+                return Err(GpuError::MemoryError(
+                    "synapse weights must be loaded before gif_step_weighted_tick".into(),
+                ));
+            }
+        };
         let stream = Self::new_stream()?;
         // Hardcoded Blackwell alignment: 8 blocks * 256 threads = 2048 neurons exact.
         // This maxes L1/shared memory bandwidth without warp divergence on sm_120.
         let grid = TEMPORAL_GRID_SIZE;
-        let shared_bytes = (state.n_inputs * 4) as u32;  // f32 * n_inputs
+        let shared_bytes = (state.n_inputs * 4) as u32; // f32 * n_inputs
 
         unsafe {
-            launch!(gif_step<<<grid, TEMPORAL_BLOCK_SIZE, shared_bytes, stream>>>(
-                state.membrane.as_device_ptr(),
-                state.adaptation.as_device_ptr(),
-                state.weights.as_device_ptr(),
-                state.input_spikes.as_device_ptr(),
-                state.refractory.as_device_ptr(),
-                state.spikes_out.as_device_ptr(),
-                neuron_count as i32,
-                state.n_inputs as i32
-            ))
-            .map_err(|e| GpuError::LaunchFailed(format!("gif_step_weighted launch: {e:?}")))?;
+            match state.synapse_precision {
+                SynapsePrecision::F32 => {
+                    launch!(gif_step<<<grid, TEMPORAL_BLOCK_SIZE, shared_bytes, stream>>>(
+                        state.membrane.as_device_ptr(),
+                        state.adaptation.as_device_ptr(),
+                        state.weights_f32.as_device_ptr(),
+                        state.input_spikes.as_device_ptr(),
+                        state.refractory.as_device_ptr(),
+                        state.spikes_out.as_device_ptr(),
+                        neuron_count as i32,
+                        state.n_inputs as i32
+                    ))
+                    .map_err(|e| {
+                        GpuError::LaunchFailed(format!("gif_step_weighted launch: {e:?}"))
+                    })?;
+                }
+                SynapsePrecision::F16 => {
+                    let weights_f16 = state.weights_f16.as_ref().ok_or_else(|| {
+                        GpuError::MemoryError("f16 synapse buffer not initialised".into())
+                    })?;
+                    launch!(gif_step<<<grid, TEMPORAL_BLOCK_SIZE, shared_bytes, stream>>>(
+                        state.membrane.as_device_ptr(),
+                        state.adaptation.as_device_ptr(),
+                        weights_f16.as_device_ptr(),
+                        state.input_spikes.as_device_ptr(),
+                        state.refractory.as_device_ptr(),
+                        state.spikes_out.as_device_ptr(),
+                        neuron_count as i32,
+                        state.n_inputs as i32
+                    ))
+                    .map_err(|e| {
+                        GpuError::LaunchFailed(format!("gif_step_weighted_f16 launch: {e:?}"))
+                    })?;
+                }
+                SynapsePrecision::None => unreachable!("validated above"),
+            }
         }
 
         // Immediately launch SAAQ reduction on same stream (no intermediate sync).
@@ -316,7 +427,9 @@ impl GpuAccelerator {
         state
             .input_current
             .upload(&vec![0.0f32; state.neuron_count])
-            .map_err(|e| GpuError::MemoryError(format!("reset input_current upload failed: {e}")))?;
+            .map_err(|e| {
+                GpuError::MemoryError(format!("reset input_current upload failed: {e}"))
+            })?;
         state
             .input_spikes
             .upload(&vec![0.0f32; state.n_inputs])
@@ -325,24 +438,27 @@ impl GpuAccelerator {
             .adaptation
             .upload(&vec![0.0f32; state.neuron_count])
             .map_err(|e| GpuError::MemoryError(format!("reset adaptation upload failed: {e}")))?;
-        state
-            .weights
-            .upload(&vec![0.0f32; state.neuron_count * state.n_inputs])
-            .map_err(|e| GpuError::MemoryError(format!("reset weights upload failed: {e}")))?;
 
         // Reset SAAQ best walker
         state
             .best_walker
-            .upload(&vec![0u32; 1])
+            .upload(&[0u32; 1])
             .map_err(|e| GpuError::MemoryError(format!("reset best_walker upload failed: {e}")))?;
 
         Ok(())
+    }
+
+    pub fn synapse_signature(&self) -> Option<&str> {
+        self.temporal_state
+            .as_ref()
+            .and_then(|state| state.synapse_signature.as_deref())
     }
 
     /// Copy the best SAT walker assignment into `output`.
     ///
     /// This wrapper matches the updated CUDA signature and blocks until the
     /// extract kernel has completed.
+    #[allow(clippy::too_many_arguments)]
     pub fn satsolver_extract(
         &self,
         assignment: &GpuBuffer<u8>,
@@ -414,7 +530,7 @@ impl GpuAccelerator {
             .as_mut()
             .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
 
-        let adaptation_scale = 0.22f32;  // matches GIF_ADAPTATION_SCALE from spiking_network.cu
+        let adaptation_scale = 0.22f32; // matches GIF_ADAPTATION_SCALE from spiking_network.cu
 
         unsafe {
             launch!(saaq_kernel<<<TEMPORAL_GRID_SIZE, TEMPORAL_BLOCK_SIZE, 0, stream>>>(
@@ -427,9 +543,9 @@ impl GpuAccelerator {
             .map_err(|e| GpuError::LaunchFailed(format!("saaq_find_best_walker launch: {e:?}")))?;
         }
 
-        stream.synchronize().map_err(|e| {
-            GpuError::LaunchFailed(format!("saaq_find_best_walker sync: {e:?}"))
-        })?;
+        stream
+            .synchronize()
+            .map_err(|e| GpuError::LaunchFailed(format!("saaq_find_best_walker sync: {e:?}")))?;
 
         let best = state.best_walker.to_vec()?;
         Ok(best[0])
@@ -440,6 +556,7 @@ impl GpuAccelerator {
     ///
     /// `best_score` and `best_walker` must each be length 1. Intermediate per-block
     /// partial buffers are allocated internally using `grid.x = ceil_div(n_walkers, 256)`.
+    #[allow(clippy::too_many_arguments)]
     pub fn satsolver_aux_reduce_best(
         &self,
         assignment: &GpuBuffer<u8>,
@@ -560,7 +677,7 @@ impl GpuAccelerator {
     }
 
     fn build_temporal_state(neuron_count: usize) -> GpuResult<TemporalState> {
-        let n_inputs = neuron_count;  // full connectivity for weighted GIF SNN (sparse can be added later)
+        let n_inputs = neuron_count; // full connectivity for weighted GIF SNN (sparse can be added later)
         let weight_size = neuron_count * n_inputs;
         Ok(TemporalState {
             neuron_count,
@@ -571,9 +688,12 @@ impl GpuAccelerator {
             input_current: GpuBuffer::<f32>::from_slice(&vec![0.0f32; neuron_count])?,
             input_spikes: GpuBuffer::<f32>::from_slice(&vec![0.0f32; n_inputs])?,
             adaptation: GpuBuffer::<f32>::from_slice(&vec![0.0f32; neuron_count])?,
-            weights: GpuBuffer::<f32>::from_slice(&vec![0.0f32; weight_size])?,
-            snapshot: GpuBuffer::<f32>::from_slice(&vec![0.0f32; SNAPSHOT_CHANNELS])?,
-            best_walker: GpuBuffer::<u32>::from_slice(&vec![0u32; 1])?,
+            weights_f32: GpuBuffer::<f32>::from_slice(&vec![0.0f32; weight_size])?,
+            weights_f16: None,
+            synapse_precision: SynapsePrecision::None,
+            synapse_signature: None,
+            snapshot: GpuBuffer::<f32>::from_slice(&[0.0f32; SNAPSHOT_CHANNELS])?,
+            best_walker: GpuBuffer::<u32>::from_slice(&[0u32; 1])?,
         })
     }
 

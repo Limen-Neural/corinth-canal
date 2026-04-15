@@ -52,6 +52,11 @@ impl<T: cust::memory::DeviceCopy + Default + Clone> GpuBuffer<T> {
         self.len
     }
 
+    /// `true` when the buffer contains no elements.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     /// Raw device pointer (for kernel launches via `cust`).
     pub fn as_device_ptr(&self) -> cust::memory::DevicePointer<T> {
         self.inner.as_device_ptr()

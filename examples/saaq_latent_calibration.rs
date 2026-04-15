@@ -1,11 +1,9 @@
 use corinth_canal::{
     FUNNEL_HIDDEN_NEURONS, HybridConfig, HybridError, HybridModel, OlmoeExecutionMode,
-    ProjectionMode, SnnLatentCalibrator, SnnLatentCsvExporter, TelemetryFunnel,
-    TelemetrySnapshot,
+    ProjectionMode, SnnLatentCalibrator, SnnLatentCsvExporter, TelemetryFunnel, TelemetrySnapshot,
 };
 
-const EXPECTED_HEADER: &str =
-    "timestamp_ms,gpu_temp_c,gpu_power_w,cpu_tctl_c,cpu_package_power_w";
+const EXPECTED_HEADER: &str = "timestamp_ms,gpu_temp_c,gpu_power_w,cpu_tctl_c,cpu_package_power_w";
 const TELEMETRY_THRESHOLDS: [f32; 4] = [1.0, 5.0, 1.0, 5.0];
 
 fn parse_u64(v: &str) -> Option<u64> {
@@ -14,11 +12,7 @@ fn parse_u64(v: &str) -> Option<u64> {
 
 fn parse_f32(v: &str) -> Option<f32> {
     let n = v.parse::<f32>().ok()?;
-    if n.is_finite() {
-        Some(n)
-    } else {
-        None
-    }
+    if n.is_finite() { Some(n) } else { None }
 }
 
 fn main() -> corinth_canal::Result<()> {
@@ -40,6 +34,7 @@ fn main() -> corinth_canal::Result<()> {
 
     let cfg = HybridConfig {
         olmoe_model_path: model_path,
+        gpu_synapse_tensor_name: "blk.0.attn_q.weight".into(),
         snn_steps: 20,
         num_experts: 8,
         top_k_experts: 1,
@@ -114,7 +109,10 @@ fn main() -> corinth_canal::Result<()> {
         ) = parsed
         else {
             rows_skipped += 1;
-            eprintln!("Skipping malformed row {}: parse/finite check failed", line_number);
+            eprintln!(
+                "Skipping malformed row {}: parse/finite check failed",
+                line_number
+            );
             continue;
         };
 
@@ -136,7 +134,7 @@ fn main() -> corinth_canal::Result<()> {
         exporter.write_row(&latent)?;
         rows_processed += 1;
 
-        if rows_processed % 100 == 0 || rows_processed <= 5 {
+        if rows_processed.is_multiple_of(100) || rows_processed <= 5 {
             println!(
                 "step={:>4} avg_pop_firing_rate_hz={:.6} membrane_dv_dt={:.6} routing_entropy={:.6} saaq_delta_q_prev={:.6} saaq_delta_q_target={:.6}",
                 rows_processed,

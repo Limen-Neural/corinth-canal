@@ -44,13 +44,13 @@ impl SignedSplitBankBridge {
             let Some(bank) = self.active_bank(channel, spike) else {
                 continue;
             };
-            for step in 0..snn_steps {
-                if step % 2 == 0 {
-                    spike_train[step].push(bank[0]);
-                    spike_train[step].push(bank[1]);
+            for (step_idx, step_spikes) in spike_train.iter_mut().enumerate().take(snn_steps) {
+                if step_idx % 2 == 0 {
+                    step_spikes.push(bank[0]);
+                    step_spikes.push(bank[1]);
                 } else {
-                    spike_train[step].push(bank[1]);
-                    spike_train[step].push(bank[0]);
+                    step_spikes.push(bank[1]);
+                    step_spikes.push(bank[0]);
                 }
             }
         }

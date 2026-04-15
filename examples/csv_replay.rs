@@ -7,8 +7,7 @@ use corinth_canal::{
     OlmoeExecutionMode, ProjectionMode, TelemetryFunnel, TelemetrySnapshot,
 };
 
-const EXPECTED_HEADER: &str =
-    "timestamp_ms,gpu_temp_c,gpu_power_w,cpu_tctl_c,cpu_package_power_w";
+const EXPECTED_HEADER: &str = "timestamp_ms,gpu_temp_c,gpu_power_w,cpu_tctl_c,cpu_package_power_w";
 const TELEMETRY_THRESHOLDS: [f32; 4] = [1.0, 5.0, 1.0, 5.0];
 
 fn parse_u64(v: &str) -> Option<u64> {
@@ -17,11 +16,7 @@ fn parse_u64(v: &str) -> Option<u64> {
 
 fn parse_f32(v: &str) -> Option<f32> {
     let n = v.parse::<f32>().ok()?;
-    if n.is_finite() {
-        Some(n)
-    } else {
-        None
-    }
+    if n.is_finite() { Some(n) } else { None }
 }
 
 fn main() -> corinth_canal::Result<()> {
@@ -37,6 +32,7 @@ fn main() -> corinth_canal::Result<()> {
 
     let cfg = HybridConfig {
         olmoe_model_path: model_path,
+        gpu_synapse_tensor_name: "blk.0.attn_q.weight".into(),
         snn_steps: 20,
         num_experts: 8,
         top_k_experts: 1,
@@ -101,11 +97,19 @@ fn main() -> corinth_canal::Result<()> {
             parse_f32(fields[4]),
         );
 
-        let (Some(timestamp_ms), Some(gpu_temp_c), Some(gpu_power_w), Some(cpu_tctl_c), Some(cpu_package_power_w)) =
-            parsed
+        let (
+            Some(timestamp_ms),
+            Some(gpu_temp_c),
+            Some(gpu_power_w),
+            Some(cpu_tctl_c),
+            Some(cpu_package_power_w),
+        ) = parsed
         else {
             rows_skipped += 1;
-            eprintln!("Skipping malformed row {}: parse/finite check failed", line_number);
+            eprintln!(
+                "Skipping malformed row {}: parse/finite check failed",
+                line_number
+            );
             continue;
         };
 
@@ -145,7 +149,7 @@ fn main() -> corinth_canal::Result<()> {
         total_input_spikes += input_spikes;
         total_hidden_spikes += hidden_spikes;
 
-        if rows_processed % 100 == 0 || rows_processed <= 5 {
+        if rows_processed.is_multiple_of(100) || rows_processed <= 5 {
             println!(
                 "step={:>4} gpu_temp={:5.1}C gpu_power={:6.1}W cpu_temp={:5.1}C ternary={:?} input_spikes={:>3} hidden_spikes={:>4} loss={:.6}",
                 rows_processed,

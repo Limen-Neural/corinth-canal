@@ -4,16 +4,15 @@ use super::olmoe::OLMoE;
 use super::projector::Projector;
 use crate::error::{HybridError, Result};
 use crate::gpu::{GpuAccelerator, GpuBuffer, GpuError, GpuResult};
-use crate::types::{
-    EMBEDDING_DIM, HybridConfig, HybridOutput, TelemetrySnapshot,
-};
+use crate::types::{EMBEDDING_DIM, HybridConfig, HybridOutput, TelemetrySnapshot};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 
 const N_NEURONS: usize = 2048;
 const IZ_NEURONS: usize = 5;
-const GPU_ROUTING_TELEMETRY_HEADER: &str = "token_idx,best_score,best_walker,spike_count,mean_adaptation,active_fraction";
+const GPU_ROUTING_TELEMETRY_HEADER: &str =
+    "token_idx,best_score,best_walker,spike_count,mean_adaptation,active_fraction";
 const GPU_ROUTING_TELEMETRY_PATH: &str = "snn_gpu_routing_telemetry.csv";
 
 /// Standalone hybrid model that keeps the projector and OLMoE logic real while
@@ -41,7 +40,9 @@ impl HybridModel {
             return Err(HybridError::InvalidConfig("num_experts must be ≥ 1".into()));
         }
         if config.top_k_experts == 0 {
-            return Err(HybridError::InvalidConfig("top_k_experts must be ≥ 1".into()));
+            return Err(HybridError::InvalidConfig(
+                "top_k_experts must be ≥ 1".into(),
+            ));
         }
         if config.top_k_experts > config.num_experts {
             return Err(HybridError::InvalidConfig(format!(
@@ -68,7 +69,7 @@ impl HybridModel {
 
     pub fn forward(&mut self, snap: &TelemetrySnapshot) -> Result<HybridOutput> {
         let (spike_train, potentials, iz_potentials) = self.synthetic_activity(snap);
-        self.forward_activity(&spike_train, &potentials, &iz_potentials)
+        self.forward_activity(spike_train.as_slice(), potentials.as_slice(), iz_potentials.as_slice())
     }
 
     pub fn forward_activity(
@@ -81,7 +82,7 @@ impl HybridModel {
 
         let embedding = self
             .projector
-            .project(&spike_train, &potentials, &iz_potentials)?;
+            .project(spike_train, potentials, iz_potentials)?;
         let olmoe_out = self.olmoe.forward(&embedding)?;
 
         let steps_f = spike_train.len().max(1) as f32;
@@ -119,13 +120,9 @@ impl HybridModel {
     ) -> GpuResult<HybridOutput> {
         let neuron_count = self.projector.input_neurons();
 
-        // Reset GIF state (membrane, adaptation, refractory, etc.)
+        accelerator.ensure_temporal_state(neuron_count)?;
+        self.ensure_temporal_synapse_weights(accelerator, neuron_count)?;
         accelerator.reset_temporal_state()?;
-
-        // Load dummy weights for weighted GIF path (in production, load from ML crate / Julia)
-        // For 2048 neurons this is ~16MB; sparsity can be enforced in weights.
-        let dummy_weights = vec![0.05f32; neuron_count * neuron_count];
-        accelerator.load_synapse_weights(&dummy_weights)?;
 
         // Phase 1: Project snapshot to input_current (can also drive input_spikes)
         accelerator.project_snapshot_current(snap, neuron_count)?;
@@ -140,8 +137,8 @@ impl HybridModel {
         let mut best_walker = 0u32;
 
         for _ in 0..self.config.snn_steps {
-            let walker = accelerator.gif_step_weighted_tick(neuron_count)?;  // now returns best_walker from SAAQ
-            best_walker = walker;  // last one wins for telemetry (or collect if multi-walker SAAQ)
+            let walker = accelerator.gif_step_weighted_tick(neuron_count)?; // now returns best_walker from SAAQ
+            best_walker = walker; // last one wins for telemetry (or collect if multi-walker SAAQ)
 
             // Minimal spike download only (or optimize further to stay on-device for projector)
             let spikes = accelerator.temporal_spikes_to_vec(neuron_count)?;
@@ -177,7 +174,7 @@ impl HybridModel {
         let _ = append_gpu_routing_telemetry_row(
             Path::new(GPU_ROUTING_TELEMETRY_PATH),
             self.global_step as usize,
-            0,  // best_score placeholder (SAAQ now on-device)
+            0, // best_score placeholder (SAAQ now on-device)
             best_walker as i32,
             spike_count,
             mean_adaptation,
@@ -185,6 +182,38 @@ impl HybridModel {
         );
 
         Ok(output)
+    }
+
+    fn ensure_temporal_synapse_weights(
+        &mut self,
+        accelerator: &mut GpuAccelerator,
+        neuron_count: usize,
+    ) -> GpuResult<()> {
+        if self.olmoe.is_loaded() {
+            let signature = format!(
+                "{}::{}",
+                self.olmoe.model_path(),
+                self.config.gpu_synapse_tensor_name
+            );
+            let weights = self
+                .olmoe
+                .registered_gpu_synapse_weights(&self.config.gpu_synapse_tensor_name)
+                .map_err(|e| {
+                    GpuError::MemoryError(format!("GGUF synapse registration failed: {e}"))
+                })?;
+            accelerator.load_synapse_weights_f16_registered(&signature, weights)?;
+            return Ok(());
+        }
+
+        let fallback_signature = format!("synthetic-f32::{neuron_count}");
+        if accelerator.synapse_signature() == Some(fallback_signature.as_str()) {
+            return Ok(());
+        }
+
+        // Stub mode keeps a deterministic fallback path without re-uploading every forward.
+        let synthetic_weights = vec![0.0f32; neuron_count * neuron_count];
+        accelerator.load_synapse_weights_named(&fallback_signature, &synthetic_weights)?;
+        Ok(())
     }
 
     fn synthetic_activity(
@@ -227,6 +256,7 @@ impl HybridModel {
         Ok(loss)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn compute_routing_telemetry(
         &self,
         accelerator: &GpuAccelerator,
@@ -256,25 +286,23 @@ impl HybridModel {
             clause_len,
         )?;
 
-        let final_score = best_score
-            .to_vec()?
-            .first()
-            .copied()
-            .ok_or_else(|| GpuError::MemoryError("best_score buffer returned no values".into()))?;
-        let final_walker = best_walker
-            .to_vec()?
-            .first()
-            .copied()
-            .ok_or_else(|| GpuError::MemoryError("best_walker buffer returned no values".into()))?;
+        let final_score =
+            best_score.to_vec()?.first().copied().ok_or_else(|| {
+                GpuError::MemoryError("best_score buffer returned no values".into())
+            })?;
+        let final_walker =
+            best_walker.to_vec()?.first().copied().ok_or_else(|| {
+                GpuError::MemoryError("best_walker buffer returned no values".into())
+            })?;
 
         append_gpu_routing_telemetry_row(
             Path::new(GPU_ROUTING_TELEMETRY_PATH),
             token_idx,
             final_score,
             final_walker,
-            0,      // spike_count (extend SAT path later with GIF stats)
-            0.0,    // mean_adaptation
-            0.0,    // active_fraction
+            0,   // spike_count (extend SAT path later with GIF stats)
+            0.0, // mean_adaptation
+            0.0, // active_fraction
         )
     }
 
@@ -425,7 +453,6 @@ mod tests {
             cpu_tctl_c: 65.0,
             cpu_package_power_w: 120.0,
             timestamp_ms: 1_000,
-            ..Default::default()
         };
         let loss = model
             .train_step(&snap, &vec![0.1_f32; EMBEDDING_DIM])
@@ -453,11 +480,9 @@ mod tests {
 
     #[test]
     fn test_forward_activity_supports_custom_projector_width() {
-        let mut model = HybridModel::new_with_projector_neurons(
-            HybridConfig::default(),
-            FUNNEL_HIDDEN_NEURONS,
-        )
-        .unwrap();
+        let mut model =
+            HybridModel::new_with_projector_neurons(HybridConfig::default(), FUNNEL_HIDDEN_NEURONS)
+                .unwrap();
         let spike_train = vec![vec![0, 1, 2, 3]; 20];
         let potentials = vec![0.4; FUNNEL_HIDDEN_NEURONS];
         let iz_potentials = vec![0.0; IZ_NEURONS];
@@ -477,7 +502,9 @@ mod tests {
         let mut model = HybridModel::new(HybridConfig::default()).unwrap();
         let snap = TelemetrySnapshot::default();
 
-        let err = model.forward_gpu_temporal(&mut accelerator, &snap).unwrap_err();
+        let err = model
+            .forward_gpu_temporal(&mut accelerator, &snap)
+            .unwrap_err();
         assert!(matches!(err, GpuError::NoGpu));
     }
 

@@ -3,7 +3,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 use super::error::{GpuError, GpuResult};
-use cust::context::Context;
+use cust::context::legacy::{Context, ContextFlags};
 use cust::device::Device;
 
 /// Owns a CUDA primary context for device 0.
@@ -20,8 +20,9 @@ impl GpuContext {
         let device = Device::get_device(0)
             .map_err(|e| GpuError::InitFailed(format!("get_device(0): {e:?}")))?;
 
-        let ctx = Context::new(device)
-            .map_err(|e| GpuError::InitFailed(format!("Context::new: {e:?}")))?;
+        let ctx =
+            Context::create_and_push(ContextFlags::MAP_HOST | ContextFlags::SCHED_AUTO, device)
+                .map_err(|e| GpuError::InitFailed(format!("Context::create_and_push: {e:?}")))?;
 
         Ok(Self { _ctx: ctx })
     }
