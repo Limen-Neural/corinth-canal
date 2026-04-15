@@ -207,6 +207,67 @@ cargo run --example csv_replay /path/to/canonical.csv
 - `global_step`
 - `olmoe_loaded`
 
+## Latent Telemetry Calibration
+
+The crate provides a separate calibration-only path for harvesting latent SNN metrics from canonical hardware telemetry. This maintains strict separation of concerns: the standard hardware telemetry file remains a pure, lightweight record of the physical machine, while latent metrics are generated on-demand during calibration passes for symbolic regression.
+
+### Latent Snapshot
+
+`SnnLatentSnapshot` captures internal SNN state and teacher targets:
+
+| Field | Description |
+|-------|-------------|
+| `timestamp_ms` | Wall-clock timestamp from hardware telemetry |
+| `avg_pop_firing_rate_hz` | Population-average firing rate of hidden neurons |
+| `membrane_dv_dt` | Row-to-row change in mean membrane potential |
+| `routing_entropy` | Normalized entropy of OLMoE expert weights |
+| `saaq_delta_q_prev` | Previous-step quantization delta (teacher history) |
+| `saaq_delta_q_target` | Target quantization delta (teacher signal) |
+
+### Latent Calibrator
+
+`SnnLatentCalibrator` derives latent features from runtime state:
+
+- **`avg_pop_firing_rate_hz`**: Computed from hidden-layer spike count over elapsed wall-clock time
+- **`membrane_dv_dt`**: Computed from row-to-row mean hidden membrane change
+- **`routing_entropy`**: Derived from normalized entropy of `HybridOutput.expert_weights`
+- **`saaq_delta_q_prev` / `saaq_delta_q_target`**: Deterministic first-pass calibration policy for bootstrapping symbolic regression
+
+### Latent CSV Exporter
+
+`SnnLatentCsvExporter` writes latent snapshots to CSV with the header:
+
+```text
+timestamp_ms,avg_pop_firing_rate_hz,membrane_dv_dt,routing_entropy,saaq_delta_q_prev,saaq_delta_q_target
+```
+
+This format is compatible with Julia symbolic regression workflows (e.g., `SymbolicRegression.jl`).
+
+### Calibration Runner
+
+The `saaq_latent_calibration` example replays canonical hardware CSV through the funnel/model, computes latent metrics, and writes `snn_latent_telemetry.csv`:
+
+```bash
+cargo run --example saaq_latent_calibration /path/to/canonical.csv [output.csv]
+```
+
+Default output path: `snn_latent_telemetry.csv`
+
+The runner validates the canonical hardware CSV header strictly and prints:
+- `rows_processed`
+- `rows_skipped`
+- `global_step`
+- `olmoe_loaded`
+- Sample latent metrics for first 5 rows and every 100th row
+
+### Separation of Concerns
+
+The latent telemetry path:
+- Does not modify `TelemetrySnapshot` or the canonical hardware telemetry schema
+- Does not affect normal inference or replay performance
+- Runs only during calibration passes when generating symbolic regression datasets
+- Keeps the standard `telemetry.csv` contract lightweight and pure
+
 ## Project layout
 
 | Path | Responsibility |
@@ -223,8 +284,10 @@ cargo run --example csv_replay /path/to/canonical.csv
 | `src/hybrid/olmoe.rs` | GGUF-aware OLMoE simulation |
 | `src/funnel.rs` | TelemetryFunnel: encoder + split-bank bridge + sparse GIF hidden layer |
 | `src/hybrid/hybrid.rs` | deterministic front-end + projector + OLMoE orchestration |
+| `src/latent.rs` | `SnnLatentSnapshot`, `SnnLatentCalibrator`, `SnnLatentCsvExporter` for symbolic regression |
 | `examples/telemetry_bridge.rs` | end-to-end standalone example |
 | `examples/csv_replay.rs` | canonical CSV replay adapter (funnel-driven) |
+| `examples/saaq_latent_calibration.rs` | calibration-only latent telemetry exporter |
 
 ## Acknowledgments
 
