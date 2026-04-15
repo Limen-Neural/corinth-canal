@@ -33,6 +33,7 @@
 pub mod error;
 pub mod funnel;
 pub mod hybrid;
+pub mod latent;
 pub mod telemetry;
 pub mod tensor;
 pub mod transformer;
@@ -44,6 +45,7 @@ pub use funnel::{
     FUNNEL_HIDDEN_NEURONS, FUNNEL_INPUT_NEURONS,
 };
 pub use hybrid::{HybridModel, OLMoE, Projector};
+pub use latent::{SnnLatentCalibrator, SnnLatentCsvExporter, SnnLatentSnapshot};
 pub use telemetry::TelemetryEncoder;
 pub use types::{
     EMBEDDING_DIM, HybridConfig, HybridOutput, OlmoeExecutionMode, ProjectionMode,
