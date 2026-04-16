@@ -69,7 +69,11 @@ impl HybridModel {
 
     pub fn forward(&mut self, snap: &TelemetrySnapshot) -> Result<HybridOutput> {
         let (spike_train, potentials, iz_potentials) = self.synthetic_activity(snap);
-        self.forward_activity(spike_train.as_slice(), potentials.as_slice(), iz_potentials.as_slice())
+        self.forward_activity(
+            spike_train.as_slice(),
+            potentials.as_slice(),
+            iz_potentials.as_slice(),
+        )
     }
 
     pub fn forward_activity(
@@ -113,6 +117,34 @@ impl HybridModel {
     /// Phase 2: gif_step_weighted_tick (with adaptation, dynamic threshold, weighted synapses)
     /// Downloads membrane + adaptation; uses existing projector (GIF-compatible via SpikingTernary).
     /// Fails fast with GpuError::NoGpu if GPU unavailable (no CPU fallback).
+    pub fn prepare_gpu_temporal(&mut self, accelerator: &mut GpuAccelerator) -> GpuResult<()> {
+        let neuron_count = self.projector.input_neurons();
+        accelerator.ensure_temporal_state(neuron_count)?;
+        self.ensure_temporal_synapse_weights(accelerator, neuron_count)?;
+        accelerator.reset_temporal_state()
+    }
+
+    /// Execute exactly one GPU temporal tick using an explicit per-neuron input vector.
+    /// Leaves all temporal state resident so repeated calls form a stateful temporal loop.
+    pub fn tick_gpu_temporal(
+        &mut self,
+        accelerator: &mut GpuAccelerator,
+        input_spikes: &[f32],
+    ) -> GpuResult<u32> {
+        let neuron_count = self.projector.input_neurons();
+        if input_spikes.len() != neuron_count {
+            return Err(GpuError::MemoryError(format!(
+                "gpu temporal input length mismatch: expected {neuron_count}, got {}",
+                input_spikes.len()
+            )));
+        }
+
+        accelerator.ensure_temporal_state(neuron_count)?;
+        self.ensure_temporal_synapse_weights(accelerator, neuron_count)?;
+        accelerator.upload_temporal_input_spikes(input_spikes)?;
+        accelerator.gif_step_weighted_tick(neuron_count)
+    }
+
     pub fn forward_gpu_temporal(
         &mut self,
         accelerator: &mut GpuAccelerator,
@@ -506,6 +538,35 @@ mod tests {
             .forward_gpu_temporal(&mut accelerator, &snap)
             .unwrap_err();
         assert!(matches!(err, GpuError::NoGpu));
+    }
+
+    #[test]
+    fn test_tick_gpu_temporal_requires_gpu() {
+        let mut accelerator = GpuAccelerator::new_stub_for_tests();
+        let mut model = HybridModel::new(HybridConfig::default()).unwrap();
+        let input = vec![0.1_f32; N_NEURONS];
+
+        let err = model
+            .tick_gpu_temporal(&mut accelerator, &input)
+            .unwrap_err();
+        assert!(matches!(err, GpuError::NoGpu));
+    }
+
+    #[test]
+    fn test_tick_gpu_temporal_rejects_wrong_input_length() {
+        let mut accelerator = GpuAccelerator::new_stub_for_tests();
+        let mut model = HybridModel::new(HybridConfig::default()).unwrap();
+        let input = vec![0.1_f32; 64];
+
+        let err = model
+            .tick_gpu_temporal(&mut accelerator, &input)
+            .unwrap_err();
+        assert!(matches!(err, GpuError::MemoryError(_)));
+        assert!(
+            err.to_string()
+                .contains("gpu temporal input length mismatch"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

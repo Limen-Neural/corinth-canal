@@ -91,9 +91,15 @@ impl GpuAccelerator {
         }
     }
 
-    /// `true` if a GPU context and all PTX modules are ready.
+    fn has_context(&self) -> bool {
+        self._ctx.is_some()
+    }
+
+    /// `true` if a CUDA context is available. PTX-backed helpers may still be
+    /// unavailable if module loading failed, but the shim-backed temporal F16
+    /// path can still run.
     pub fn is_ready(&self) -> bool {
-        self._ctx.is_some() && self.modules.is_some()
+        self.has_context()
     }
 
     /// Borrow the loaded kernel module, or return an error.
@@ -102,7 +108,7 @@ impl GpuAccelerator {
     }
 
     pub fn ensure_temporal_state(&mut self, neuron_count: usize) -> GpuResult<()> {
-        if !self.is_ready() {
+        if !self.has_context() {
             return Err(GpuError::NoGpu);
         }
         if neuron_count == 0 {
@@ -192,7 +198,7 @@ impl GpuAccelerator {
     }
 
     pub fn temporal_spikes_to_vec(&self, neuron_count: usize) -> GpuResult<Vec<u32>> {
-        if !self.is_ready() {
+        if !self.has_context() {
             return Err(GpuError::NoGpu);
         }
         let state = self
@@ -204,7 +210,7 @@ impl GpuAccelerator {
     }
 
     pub fn temporal_membrane_to_vec(&self, neuron_count: usize) -> GpuResult<Vec<f32>> {
-        if !self.is_ready() {
+        if !self.has_context() {
             return Err(GpuError::NoGpu);
         }
         let state = self
@@ -217,7 +223,7 @@ impl GpuAccelerator {
 
     /// Download current adaptation values (GIF state) from device.
     pub fn temporal_adaptation_to_vec(&self, neuron_count: usize) -> GpuResult<Vec<f32>> {
-        if !self.is_ready() {
+        if !self.has_context() {
             return Err(GpuError::NoGpu);
         }
         let state = self
@@ -226,6 +232,28 @@ impl GpuAccelerator {
             .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
         Self::expect_len("temporal adaptation", state.adaptation.len(), neuron_count)?;
         state.adaptation.to_vec()
+    }
+
+    /// Upload a per-neuron temporal input vector into the resident `input_spikes` buffer.
+    pub(crate) fn upload_temporal_input_spikes(&mut self, input_spikes: &[f32]) -> GpuResult<()> {
+        if !self.has_context() {
+            return Err(GpuError::NoGpu);
+        }
+        let state = self
+            .temporal_state
+            .as_mut()
+            .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
+        if input_spikes.len() != state.n_inputs {
+            return Err(GpuError::MemoryError(format!(
+                "temporal input_spikes length mismatch: expected {}, got {}",
+                state.n_inputs,
+                input_spikes.len()
+            )));
+        }
+        state
+            .input_spikes
+            .upload(input_spikes)
+            .map_err(|e| GpuError::MemoryError(format!("input_spikes upload failed: {e}")))
     }
 
     /// Load synapse weight matrix for GIF weighted kernel. Must match neuron_count * n_inputs.
@@ -239,7 +267,7 @@ impl GpuAccelerator {
         signature: &str,
         weights: &[f32],
     ) -> GpuResult<()> {
-        if !self.is_ready() {
+        if !self.has_context() {
             return Err(GpuError::NoGpu);
         }
         let state = self
@@ -277,7 +305,7 @@ impl GpuAccelerator {
         signature: &str,
         weights: &[u16],
     ) -> GpuResult<()> {
-        if !self.is_ready() {
+        if !self.has_context() {
             return Err(GpuError::NoGpu);
         }
         let state = self
@@ -326,7 +354,6 @@ impl GpuAccelerator {
     pub fn gif_step_weighted_tick(&mut self, neuron_count: usize) -> GpuResult<u32> {
         self.ensure_temporal_state(neuron_count)?;
 
-        let modules = self.modules.as_ref().ok_or(GpuError::NoGpu)?;
         let state = self
             .temporal_state
             .as_mut()
@@ -345,6 +372,7 @@ impl GpuAccelerator {
         unsafe {
             match state.synapse_precision {
                 SynapsePrecision::F32 => {
+                    let modules = self.modules.as_ref().ok_or(GpuError::NoGpu)?;
                     let gif_step = modules.get_function("gif_step_weighted")?;
                     launch!(gif_step<<<grid, TEMPORAL_BLOCK_SIZE, shared_bytes, stream>>>(
                         state.membrane.as_device_ptr(),
@@ -390,32 +418,37 @@ impl GpuAccelerator {
     }
 
     pub fn reset_temporal_state(&mut self) -> GpuResult<()> {
-        if !self.is_ready() {
+        if !self.has_context() {
             return Err(GpuError::NoGpu);
         }
 
         let Some(state) = self.temporal_state.as_mut() else {
             return Ok(());
         };
+        if let Some(modules) = self.modules.as_ref() {
+            let reset_membrane = modules.get_function("reset_membrane")?;
+            let stream = Self::new_stream()?;
+            // Hardcoded Blackwell alignment for 2048 neurons
+            let grid = TEMPORAL_GRID_SIZE;
 
-        let modules = self.modules.as_ref().ok_or(GpuError::NoGpu)?;
-        let reset_membrane = modules.get_function("reset_membrane")?;
-        let stream = Self::new_stream()?;
-        // Hardcoded Blackwell alignment for 2048 neurons
-        let grid = TEMPORAL_GRID_SIZE;
+            unsafe {
+                launch!(reset_membrane<<<grid, TEMPORAL_BLOCK_SIZE, TEMPORAL_SHARED_MEM_BYTES, stream>>>(
+                    state.membrane.as_device_ptr(),
+                    state.neuron_count as i32,
+                    0.0f32
+                ))
+                .map_err(|e| GpuError::LaunchFailed(format!("reset_membrane launch: {e:?}")))?;
+            }
 
-        unsafe {
-            launch!(reset_membrane<<<grid, TEMPORAL_BLOCK_SIZE, TEMPORAL_SHARED_MEM_BYTES, stream>>>(
-                state.membrane.as_device_ptr(),
-                state.neuron_count as i32,
-                0.0f32
-            ))
-            .map_err(|e| GpuError::LaunchFailed(format!("reset_membrane launch: {e:?}")))?;
+            stream
+                .synchronize()
+                .map_err(|e| GpuError::LaunchFailed(format!("reset_membrane sync: {e:?}")))?;
+        } else {
+            state
+                .membrane
+                .upload(&vec![0.0f32; state.neuron_count])
+                .map_err(|e| GpuError::MemoryError(format!("reset membrane upload failed: {e}")))?;
         }
-
-        stream
-            .synchronize()
-            .map_err(|e| GpuError::LaunchFailed(format!("reset_membrane sync: {e:?}")))?;
 
         state
             .refractory
