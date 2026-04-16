@@ -3,7 +3,9 @@
 //
 //  PTX files are compiled by myelin-accelerator/build.rs into OUT_DIR
 //  and embedded at compile time with include_str!.  There is no runtime
-//  file-system lookup — the bytes travel with the binary.
+//  file-system lookup — the bytes travel with the binary. Most kernels
+//  launch through PTX/JIT; the Blackwell-critical F16 GIF and SAAQ paths
+//  launch through a linked C ABI shim in ffi.rs instead.
 // ════════════════════════════════════════════════════════════════════
 
 use super::error::{GpuError, GpuResult};
@@ -66,7 +68,6 @@ impl KernelModule {
                 "lif_step",
                 "lif_step_weighted",
                 "gif_step_weighted",
-                "gif_step_weighted_f16",
                 "spike_rate",
                 "reset_membrane",
                 "stdp_update",
@@ -74,7 +75,6 @@ impl KernelModule {
                 "membrane_dv_dt_reduce_pass1",
                 "routing_entropy_reduce_pass1",
                 "latent_reduce_pass2",
-                "saaq_find_best_walker",
             ],
         )?;
 

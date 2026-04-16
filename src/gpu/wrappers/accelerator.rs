@@ -11,6 +11,7 @@
 
 use super::context::GpuContext;
 use super::error::{GpuError, GpuResult};
+use super::ffi;
 use super::kernel::KernelModule;
 use super::memory::GpuBuffer;
 use crate::types::TelemetrySnapshot;
@@ -328,15 +329,11 @@ impl GpuAccelerator {
             .temporal_state
             .as_mut()
             .ok_or_else(|| GpuError::MemoryError("temporal state not initialised".into()))?;
-        let gif_step = match state.synapse_precision {
-            SynapsePrecision::F32 => modules.get_function("gif_step_weighted")?,
-            SynapsePrecision::F16 => modules.get_function("gif_step_weighted_f16")?,
-            SynapsePrecision::None => {
-                return Err(GpuError::MemoryError(
-                    "synapse weights must be loaded before gif_step_weighted_tick".into(),
-                ));
-            }
-        };
+        if state.synapse_precision == SynapsePrecision::None {
+            return Err(GpuError::MemoryError(
+                "synapse weights must be loaded before gif_step_weighted_tick".into(),
+            ));
+        }
         let stream = Self::new_stream()?;
         // Hardcoded Blackwell alignment: 8 blocks * 256 threads = 2048 neurons exact.
         // This maxes L1/shared memory bandwidth without warp divergence on sm_120.
@@ -346,6 +343,7 @@ impl GpuAccelerator {
         unsafe {
             match state.synapse_precision {
                 SynapsePrecision::F32 => {
+                    let gif_step = modules.get_function("gif_step_weighted")?;
                     launch!(gif_step<<<grid, TEMPORAL_BLOCK_SIZE, shared_bytes, stream>>>(
                         state.membrane.as_device_ptr(),
                         state.adaptation.as_device_ptr(),
@@ -364,7 +362,11 @@ impl GpuAccelerator {
                     let weights_f16 = state.weights_f16.as_ref().ok_or_else(|| {
                         GpuError::MemoryError("f16 synapse buffer not initialised".into())
                     })?;
-                    launch!(gif_step<<<grid, TEMPORAL_BLOCK_SIZE, shared_bytes, stream>>>(
+                    ffi::launch_gif_step_weighted_f16(
+                        &stream,
+                        grid,
+                        TEMPORAL_BLOCK_SIZE,
+                        shared_bytes,
                         state.membrane.as_device_ptr(),
                         state.adaptation.as_device_ptr(),
                         weights_f16.as_device_ptr(),
@@ -372,11 +374,8 @@ impl GpuAccelerator {
                         state.refractory.as_device_ptr(),
                         state.spikes_out.as_device_ptr(),
                         neuron_count as i32,
-                        state.n_inputs as i32
-                    ))
-                    .map_err(|e| {
-                        GpuError::LaunchFailed(format!("gif_step_weighted_f16 launch: {e:?}"))
-                    })?;
+                        state.n_inputs as i32,
+                    )?;
                 }
                 SynapsePrecision::None => unreachable!("validated above"),
             }
@@ -523,8 +522,6 @@ impl GpuAccelerator {
     ) -> GpuResult<u32> {
         self.ensure_temporal_state(neuron_count)?;
 
-        let modules = self.modules.as_ref().ok_or(GpuError::NoGpu)?;
-        let saaq_kernel = modules.get_function("saaq_find_best_walker")?;
         let state = self
             .temporal_state
             .as_mut()
@@ -532,16 +529,17 @@ impl GpuAccelerator {
 
         let adaptation_scale = 0.22f32; // matches GIF_ADAPTATION_SCALE from spiking_network.cu
 
-        unsafe {
-            launch!(saaq_kernel<<<TEMPORAL_GRID_SIZE, TEMPORAL_BLOCK_SIZE, 0, stream>>>(
-                state.membrane.as_device_ptr(),
-                state.adaptation.as_device_ptr(),
-                state.best_walker.as_device_ptr(),
-                neuron_count as i32,
-                adaptation_scale
-            ))
-            .map_err(|e| GpuError::LaunchFailed(format!("saaq_find_best_walker launch: {e:?}")))?;
-        }
+        ffi::launch_saaq_find_best_walker(
+            stream,
+            TEMPORAL_GRID_SIZE,
+            TEMPORAL_BLOCK_SIZE,
+            0,
+            state.membrane.as_device_ptr(),
+            state.adaptation.as_device_ptr(),
+            state.best_walker.as_device_ptr(),
+            neuron_count as i32,
+            adaptation_scale,
+        )?;
 
         stream
             .synchronize()

@@ -5,6 +5,7 @@
 pub mod accelerator;
 pub mod context;
 pub mod error;
+mod ffi;
 pub mod kernel;
 pub mod memory;
 

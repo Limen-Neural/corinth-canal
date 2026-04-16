@@ -319,7 +319,7 @@ extern "C" __global__
 void gif_step_weighted_f16(
     float* __restrict__        membrane,
     float* __restrict__        adaptation,
-    const unsigned short* __restrict__ weights,
+    const half* __restrict__   weights,
     const float* __restrict__  input_spikes,
     unsigned int* __restrict__ refract,
     unsigned int* __restrict__ spikes_out,
@@ -347,12 +347,10 @@ void gif_step_weighted_f16(
     } else {
         a *= GIF_ADAPTATION_DECAY;
 
-        const unsigned short* w_row = weights + (long)tid * n_inputs;
+        const half* w_row = weights + (long)tid * n_inputs;
         float drive = 0.0f;
-        for (int j = 0; j < n_inputs; ++j) {
-            float w = __half2float(*reinterpret_cast<const __half*>(&w_row[j]));
-            drive = fmaf(w, s_inputs[j], drive);
-        }
+        for (int j = 0; j < n_inputs; ++j)
+            drive = fmaf(__half2float(w_row[j]), s_inputs[j], drive);
 
         v = v * GIF_LEAK + drive * GIF_DRIVE_SCALE - a * GIF_ADAPTATION_TERM;
 
