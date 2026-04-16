@@ -2,11 +2,11 @@
 
 use crate::error::{HybridError, Result};
 use crate::types::{EMBEDDING_DIM, OlmoeExecutionMode};
-use memmap2::Mmap;
+use memmap2::{MmapMut, MmapOptions};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::fs::File;
+use std::fs::OpenOptions;
 use std::slice;
 
 const OLMOE_HIDDEN: usize = 2048;
@@ -64,7 +64,7 @@ pub struct OlmoeOutput {
 
 #[derive(Debug)]
 struct MappedOlmoeCheckpoint {
-    mmap: Mmap,
+    mmap: MmapMut,
     tensors: HashMap<String, GgufTensorInfo>,
     registered_gpu_synapse: Option<RegisteredTensorSliceU16>,
 }
@@ -191,14 +191,22 @@ impl OLMoE {
     }
 
     fn probe_and_map(path: &str) -> Result<(OlmoeMetadata, MappedOlmoeCheckpoint)> {
-        let file = File::open(path).map_err(|e| HybridError::ModelLoad {
-            path: path.to_owned(),
-            reason: e.to_string(),
-        })?;
-        let mmap = unsafe { Mmap::map(&file) }.map_err(|e| HybridError::ModelLoad {
-            path: path.to_owned(),
-            reason: format!("mmap failed: {e}"),
-        })?;
+        let file =
+            OpenOptions::new()
+                .read(true)
+                .open(path)
+                .map_err(|e| HybridError::ModelLoad {
+                    path: path.to_owned(),
+                    reason: e.to_string(),
+                })?;
+        // CUDA host registration rejects the shared file mapping used by `map`,
+        // but accepts a writable MAP_PRIVATE/COW file view without requiring any
+        // Vec staging or mutating the checkpoint on disk.
+        let mmap =
+            unsafe { MmapOptions::new().map_copy(&file) }.map_err(|e| HybridError::ModelLoad {
+                path: path.to_owned(),
+                reason: format!("copy-on-write mmap failed: {e}"),
+            })?;
 
         let parsed = parse_checkpoint_layout(&mmap, path)?;
         let routing =
@@ -460,7 +468,7 @@ impl MappedOlmoeCheckpoint {
 impl RegisteredTensorSliceU16 {
     fn register(
         tensor_name: &str,
-        mmap: &Mmap,
+        mmap: &MmapMut,
         absolute_offset: usize,
         n_elements: usize,
         path: &str,

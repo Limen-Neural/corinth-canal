@@ -209,6 +209,24 @@ let output = model.forward_gpu_temporal(&mut accelerator, &TelemetrySnapshot::de
 // GIF adaptation drives sparsity pruning; CSV now logs spike_count, mean_adaptation, active_fraction for VRAM optimization and Julia symbolic regression
 ```
 
+## GPU Smoke Test
+
+To validate the actual Blackwell temporal path on hardware, use the dedicated smoke test:
+
+```bash
+OLMOE_PATH=/path/to/gguf cargo run --release --example gpu_smoke_test
+```
+
+This example exercises:
+
+- GGUF mmap plus `cuMemHostRegister_v2` host registration for `blk.0.attn_q.weight`
+- resident FP16 synapse upload into the GPU temporal state
+- `gif_step_weighted_f16`
+- the two-pass SAAQ reduction returning `best_walker`
+- per-tick timing output in microseconds
+
+This is the correct example for validating the real GPU temporal path. `saaq_latent_calibration` is CPU-side calibration logic and does not exercise the direct GPU temporal loop.
+
 ## OLMoE Modes
 
 | Mode | Behavior |
