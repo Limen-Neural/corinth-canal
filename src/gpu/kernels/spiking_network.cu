@@ -15,7 +15,8 @@
 //    membrane_dv_dt_reduce_pass1 — per-block reduction of |dv/dt|
 //    routing_entropy_reduce_pass1 — per-block reduction of routing entropy
 //    latent_reduce_pass2          — final reduction of pass1 partials
-//    saaq_find_best_walker        — SAAQ argmax reduction (membrane - scale*adaptation); writes single u32 best_walker
+//    saaq_find_best_walker        — SAAQ pass 1 argmax reduction; writes one partial per block
+//    saaq_reduce_partials_f16     — SAAQ pass 2 reduction over block partials; writes single u32 best_walker
 //
 //  Parameters follow the 16-neuron / 16-channel architecture in
 //  neuro-spike-core/src/snn/engine.rs.
@@ -679,14 +680,13 @@ void latent_reduce_pass2(
 // ════════════════════════════════════════════════════════════════════
 //  saaq_find_best_walker
 //
-//  On-device SAAQ (Spiking Activity and Adaptive Quantization) reduction.
+//  On-device SAAQ (Spiking Activity and Adaptive Quantization) pass 1 reduction.
 //  Computes per-neuron score = membrane[tid] - (adaptation_scale * adaptation[tid])
-//  and finds argmax walker (higher score better). Matches the clarified Rust heuristic.
+//  and finds one winning `(score, walker)` pair per block.
 //
 //  Launched with <<<8, 256>>> for exact 2048-neuron Blackwell alignment.
-//  Uses warp-level max reduction (no atomics, no shared mem beyond warp). Only
-//  the winning u32 index is written to output buffer. This eliminates the
-//  Rust for-loop over temporal_*_to_vec() in hybrid.rs::forward_gpu_temporal.
+//  Uses warp-level max reduction (no atomics, no shared mem beyond warp). The
+//  block winner is written to a per-block partial buffer indexed by blockIdx.x.
 //
 //  The pipeline now stays entirely in VRAM after initial latent DMA.
 //  Rust downloads only this 4-byte result per tick for telemetry/CSV.
@@ -694,7 +694,8 @@ void latent_reduce_pass2(
 //  Params
 //    membrane          [n_neurons] — GIF membrane potentials
 //    adaptation        [n_neurons] — GIF adaptation state
-//    best_walker_out   [1]         — output: best walker index (u32)
+//    partial_scores    [gridDim.x] — output: best score per block
+//    partial_walkers   [gridDim.x] — output: best walker per block
 //    n_neurons
 //    adaptation_scale  — e.g. GIF_ADAPTATION_SCALE (0.22f)
 // ════════════════════════════════════════════════════════════════════
@@ -703,7 +704,8 @@ __launch_bounds__(256)
 void saaq_find_best_walker(
     const float* __restrict__ membrane,
     const float* __restrict__ adaptation,
-    unsigned int* __restrict__ best_walker_out,
+    float* __restrict__ partial_scores,
+    unsigned int* __restrict__ partial_walkers,
     int n_neurons,
     float adaptation_scale)
 {
@@ -756,7 +758,54 @@ void saaq_find_best_walker(
         }
 
         if (threadIdx.x == 0) {
-            *best_walker_out = (unsigned int)bwalker;
+            partial_scores[blockIdx.x] = bscore;
+            partial_walkers[blockIdx.x] = (unsigned int)bwalker;
         }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  saaq_reduce_partials_f16
+//
+//  On-device SAAQ pass 2 reduction. Consumes the per-block partial winners
+//  emitted by saaq_find_best_walker and writes a single global best walker.
+//
+//  Launched with <<<1, 32>>>. Lanes >= n_partials are masked with the -1e30f
+//  sentinel so the warp reduction cannot read or compare garbage values.
+//
+//  Params
+//    partial_scores    [n_partials] — per-block best score
+//    partial_walkers   [n_partials] — per-block best walker
+//    best_walker_out   [1]          — output: final best walker index
+//    n_partials
+// ════════════════════════════════════════════════════════════════════
+extern "C" __global__
+__launch_bounds__(32)
+void saaq_reduce_partials_f16(
+    const float* __restrict__ partial_scores,
+    const unsigned int* __restrict__ partial_walkers,
+    unsigned int* __restrict__ best_walker_out,
+    int n_partials)
+{
+    int lane = threadIdx.x;
+    float my_score = -1e30f;
+    int my_walker = 0;
+
+    if (lane < n_partials) {
+        my_score = partial_scores[lane];
+        my_walker = (int)partial_walkers[lane];
+    }
+
+    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
+        float other_score = __shfl_down_sync(0xffffffffu, my_score, offset);
+        int other_walker = __shfl_down_sync(0xffffffffu, my_walker, offset);
+        if (other_score > my_score || (other_score == my_score && other_walker < my_walker)) {
+            my_score = other_score;
+            my_walker = other_walker;
+        }
+    }
+
+    if (lane == 0) {
+        best_walker_out[0] = (unsigned int)my_walker;
     }
 }

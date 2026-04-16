@@ -48,6 +48,8 @@ struct TemporalState {
     synapse_signature: Option<String>,
     snapshot: GpuBuffer<f32>,
     best_walker: GpuBuffer<u32>, // persistent 1-element for SAAQ on-device reduction
+    saaq_partial_scores: GpuBuffer<f32>,
+    saaq_partial_walkers: GpuBuffer<u32>,
 }
 
 /// Facade that owns a CUDA context and the compiled PTX modules.
@@ -438,7 +440,7 @@ impl GpuAccelerator {
             .upload(&vec![0.0f32; state.neuron_count])
             .map_err(|e| GpuError::MemoryError(format!("reset adaptation upload failed: {e}")))?;
 
-        // Reset SAAQ best walker
+        // Reset SAAQ best walker. Partial buffers are overwritten on every SAAQ launch.
         state
             .best_walker
             .upload(&[0u32; 1])
@@ -513,7 +515,8 @@ impl GpuAccelerator {
         Ok(())
     }
 
-    /// On-device SAAQ reduction: score = membrane - (adaptation_scale * adaptation); argmax walker.
+    /// On-device SAAQ reduction: pass 1 emits one partial winner per block, then a single
+    /// warp-sized pass 2 reduces those partials to one final best walker.
     /// Launches on `stream` after `gif_step_weighted`; synchronizes before the minimal device read.
     pub fn saaq_find_best_walker(
         &mut self,
@@ -536,6 +539,8 @@ impl GpuAccelerator {
             0,
             state.membrane.as_device_ptr(),
             state.adaptation.as_device_ptr(),
+            state.saaq_partial_scores.as_device_ptr(),
+            state.saaq_partial_walkers.as_device_ptr(),
             state.best_walker.as_device_ptr(),
             neuron_count as i32,
             adaptation_scale,
@@ -677,6 +682,7 @@ impl GpuAccelerator {
     fn build_temporal_state(neuron_count: usize) -> GpuResult<TemporalState> {
         let n_inputs = neuron_count; // full connectivity for weighted GIF SNN (sparse can be added later)
         let weight_size = neuron_count * n_inputs;
+        let saaq_partials_len = TEMPORAL_GRID_SIZE as usize;
         Ok(TemporalState {
             neuron_count,
             n_inputs,
@@ -692,6 +698,8 @@ impl GpuAccelerator {
             synapse_signature: None,
             snapshot: GpuBuffer::<f32>::from_slice(&[0.0f32; SNAPSHOT_CHANNELS])?,
             best_walker: GpuBuffer::<u32>::from_slice(&[0u32; 1])?,
+            saaq_partial_scores: GpuBuffer::<f32>::from_slice(&vec![0.0f32; saaq_partials_len])?,
+            saaq_partial_walkers: GpuBuffer::<u32>::from_slice(&vec![0u32; saaq_partials_len])?,
         })
     }
 
@@ -714,11 +722,83 @@ impl Default for GpuAccelerator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gpu::wrappers::context::GpuContext;
 
     #[test]
     fn test_temporal_state_requires_gpu() {
         let mut accelerator = GpuAccelerator::new_stub_for_tests();
         let err = accelerator.ensure_temporal_state(2048).unwrap_err();
         assert!(matches!(err, GpuError::NoGpu));
+    }
+
+    #[test]
+    #[ignore] // requires GPU + driver ≥ 570
+    fn test_saaq_two_pass_reduction_selects_global_best_and_tie_breaks() {
+        if !GpuContext::is_available() {
+            return;
+        }
+
+        let mut accelerator = GpuAccelerator::new();
+        if !accelerator.is_ready() {
+            eprintln!("Skipping SAAQ ignored test because GPU accelerator is not fully ready");
+            return;
+        }
+
+        let neuron_count = (TEMPORAL_GRID_SIZE * TEMPORAL_BLOCK_SIZE) as usize;
+        accelerator
+            .ensure_temporal_state(neuron_count)
+            .expect("temporal state should allocate");
+
+        let mut membrane = vec![0.0f32; neuron_count];
+        let mut adaptation = vec![0.0f32; neuron_count];
+        membrane[17] = 2.0;
+        membrane[5 * TEMPORAL_BLOCK_SIZE as usize + 9] = 4.5;
+
+        {
+            let state = accelerator
+                .temporal_state
+                .as_mut()
+                .expect("temporal state should exist");
+            state
+                .membrane
+                .upload(&membrane)
+                .expect("membrane upload should succeed");
+            state
+                .adaptation
+                .upload(&adaptation)
+                .expect("adaptation upload should succeed");
+        }
+
+        let stream = GpuAccelerator::new_stream().expect("stream should create");
+        let best = accelerator
+            .saaq_find_best_walker(&stream, neuron_count)
+            .expect("SAAQ reduction should succeed");
+        assert_eq!(best, 5 * TEMPORAL_BLOCK_SIZE + 9);
+
+        membrane.fill(0.0);
+        adaptation.fill(0.0);
+        membrane[11] = 3.0;
+        membrane[3 * TEMPORAL_BLOCK_SIZE as usize + 4] = 3.0;
+
+        {
+            let state = accelerator
+                .temporal_state
+                .as_mut()
+                .expect("temporal state should exist");
+            state
+                .membrane
+                .upload(&membrane)
+                .expect("membrane upload should succeed");
+            state
+                .adaptation
+                .upload(&adaptation)
+                .expect("adaptation upload should succeed");
+        }
+
+        let stream = GpuAccelerator::new_stream().expect("stream should create");
+        let tie_best = accelerator
+            .saaq_find_best_walker(&stream, neuron_count)
+            .expect("SAAQ reduction should succeed");
+        assert_eq!(tie_best, 11);
     }
 }

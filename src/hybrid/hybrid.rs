@@ -130,7 +130,7 @@ impl HybridModel {
         // Optional: set some baseline input_spikes from snapshot or previous output for recurrence.
         // For now, the kernel will use loaded weights + any non-zero input_spikes.
 
-        // Phase 2: Run N GIF steps with on-device SAAQ reduction (no per-tick downloads).
+        // Phase 2: Run N GIF steps with on-device two-pass SAAQ reduction (no per-tick downloads).
         // gif_step_weighted_tick now internally calls saaq_find_best_walker.
         // Spikes/membrane/adaptation stay in VRAM. Only best_walker (4 bytes) is downloaded.
         let mut spike_train: Vec<Vec<usize>> = Vec::with_capacity(self.config.snn_steps);

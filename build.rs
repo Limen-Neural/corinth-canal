@@ -43,6 +43,8 @@ int myelin_launch_saaq_find_best_walker(
     unsigned int shared_bytes,
     void* membrane,
     void* adaptation,
+    void* partial_scores,
+    void* partial_walkers,
     void* best_walker_out,
     int n_neurons,
     float adaptation_scale)
@@ -53,6 +55,8 @@ int myelin_launch_saaq_find_best_walker(
     (void)shared_bytes;
     (void)membrane;
     (void)adaptation;
+    (void)partial_scores;
+    (void)partial_walkers;
     (void)best_walker_out;
     (void)n_neurons;
     (void)adaptation_scale;

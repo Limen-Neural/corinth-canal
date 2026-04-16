@@ -37,7 +37,7 @@ expert_weights + selected_experts + hidden + spike_count telemetry
 
 ### GPU Acceleration (NVIDIA Blackwell sm_120+ with GIF)
 
-When a compatible GPU is detected, the crate offloads the 2048-neuron GIF SNN to CUDA via `GpuAccelerator` (temporal tick loop with `gif_step_weighted` / `gif_step_weighted_f16`, adaptation buffer, dynamic thresholds). The temporal path now supports a GGUF-backed first-layer synapse upload: `blk.0.attn_q.weight` is memory-mapped, host-registered with CUDA, uploaded once as FP16, and then reused across forwards.
+When a compatible GPU is detected, the crate offloads the 2048-neuron GIF SNN to CUDA via `GpuAccelerator` (temporal tick loop with `gif_step_weighted` / `gif_step_weighted_f16`, adaptation buffer, dynamic thresholds). The temporal path now supports a GGUF-backed first-layer synapse upload: `blk.0.attn_q.weight` is memory-mapped, host-registered with CUDA, uploaded once as FP16, and then reused across forwards. The SAAQ winner selection now runs as a race-free two-pass on-device reduction: pass 1 emits one winner per block, pass 2 reduces those 8 partials to a single best walker before the 4-byte result is copied back to Rust.
 
 ```text
 TelemetrySnapshot
@@ -47,6 +47,8 @@ TelemetrySnapshot
        v  mmap GGUF tensor + cuMemHostRegister_v2 + resident synapse upload
        |
        v  gif_step_weighted_tick loop (adaptation decay, adaptive threshold = base + scale*adaptation, weighted synapses, refractory)
+       |
+       v  two-pass SAAQ reduction (block partials -> final best walker)
        |
        v  temporal_*_to_vec (membrane, adaptation, spikes)
        |
