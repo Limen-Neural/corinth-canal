@@ -32,10 +32,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. Extract embeddings for token IDs: [1045, 2099, 450, 8000, 12]
     // These represent the prompt: "Let's teach this MoE model the language of SNN"
-    let tokens = [1045, 2099, 450, 8000, 12];
+    let token_ids = vec![402, 11492, 286, 257, 4568, 318, 12056, 4202, 13]; // Simulates: The derivate of a constant is mathematically zero.
     let mut pooled = vec![0.0f32; EMBEDDING_DIM];
 
-    for &token in &tokens {
+    for &token in &token_ids {
         let emb = model.extract_token_embedding(token)?;
         for i in 0..EMBEDDING_DIM {
             pooled[i] += emb[i];
@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. Mean-pool into a single [f32; 2048] vector
     for i in 0..EMBEDDING_DIM {
-        pooled[i] /= tokens.len() as f32;
+        pooled[i] /= token_ids.len() as f32;
     }
 
     // Apply L2 Normalization to prevent Routing Collapse from overpowering fatigue
