@@ -21,9 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     if !model.router_loaded() {
-        return Err(
-            Error::other("OlmoeRouter model did not load from GGUF_CHECKPOINT_PATH").into(),
-        );
+        return Err(Error::other("OlmoeRouter model did not load from GGUF_CHECKPOINT_PATH").into());
     }
     if !accelerator.is_ready() {
         return Err(Error::other("GpuAccelerator is not ready").into());

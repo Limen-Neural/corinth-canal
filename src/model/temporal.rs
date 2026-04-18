@@ -1,10 +1,10 @@
 //! GPU temporal loop helpers for [`Model`](super::Model).
 
-use super::Model;
 use super::{
     core::{GPU_ROUTING_TELEMETRY_PATH, IZ_NEURONS, N_NEURONS},
     telemetry_io::append_gpu_routing_telemetry_row,
 };
+use super::Model;
 use crate::gpu::{GpuAccelerator, GpuError, GpuResult};
 use crate::types::{ModelOutput, TelemetrySnapshot};
 use std::path::Path;

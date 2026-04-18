@@ -15,9 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut model = Model::new(default_spiking_model_config(model_path.clone(), 1))?;
 
     if !model.router_loaded() {
-        return Err(
-            Error::other("OlmoeRouter model did not load from GGUF_CHECKPOINT_PATH").into(),
-        );
+        return Err(Error::other("OlmoeRouter model did not load from GGUF_CHECKPOINT_PATH").into());
     }
     if !accelerator.is_ready() {
         return Err(Error::other("GpuAccelerator is not ready").into());

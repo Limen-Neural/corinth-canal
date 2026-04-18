@@ -69,7 +69,12 @@ pub struct OlmoeOutput {
 
 impl OlmoeRouter {
     pub fn load(model_path: &str, num_experts: usize, top_k: usize) -> Result<Self> {
-        Self::load_with_mode(model_path, num_experts, top_k, RoutingMode::StubUniform)
+        Self::load_with_mode(
+            model_path,
+            num_experts,
+            top_k,
+            RoutingMode::StubUniform,
+        )
     }
 
     pub fn load_with_mode(

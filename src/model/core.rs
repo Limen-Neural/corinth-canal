@@ -5,7 +5,9 @@ use crate::error::{HybridError, Result};
 use crate::gpu::{GpuAccelerator, GpuBuffer, GpuError, GpuResult};
 use crate::moe::OlmoeRouter;
 use crate::projector::Projector;
-use crate::types::{EMBEDDING_DIM, ModelConfig, ModelOutput, RoutingMode, TelemetrySnapshot};
+use crate::types::{
+    EMBEDDING_DIM, ModelConfig, ModelOutput, RoutingMode, TelemetrySnapshot,
+};
 use std::path::Path;
 
 pub(super) const N_NEURONS: usize = 2048;
@@ -217,7 +219,7 @@ impl Model {
 mod tests {
     use super::*;
     use crate::funnel::FUNNEL_HIDDEN_NEURONS;
-    use crate::types::{ProjectionMode, RoutingMode};
+    use crate::types::{RoutingMode, ProjectionMode};
 
     fn default_model() -> Model {
         Model::new(ModelConfig::default()).expect("default model init failed")

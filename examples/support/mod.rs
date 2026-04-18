@@ -2,10 +2,10 @@
 #![allow(dead_code)]
 
 use corinth_canal::{
-    EMBEDDING_DIM,
     model::{Model, ModelConfig},
     moe::RoutingMode,
     projector::ProjectionMode,
+    EMBEDDING_DIM,
 };
 use std::io::Error;
 

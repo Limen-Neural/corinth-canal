@@ -2,7 +2,9 @@
 
 mod support;
 
-use corinth_canal::{EMBEDDING_DIM, model::Model, moe::RoutingMode, telemetry::TelemetrySnapshot};
+use corinth_canal::{
+    EMBEDDING_DIM, model::Model, moe::RoutingMode, telemetry::TelemetrySnapshot,
+};
 use support::{default_spiking_model_config, gguf_checkpoint_path_or_default};
 
 fn main() -> corinth_canal::Result<()> {
