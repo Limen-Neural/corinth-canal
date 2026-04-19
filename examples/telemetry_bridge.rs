@@ -37,6 +37,8 @@ fn main() -> corinth_canal::Result<()> {
             gpu_power_w: 180.0 + phase * 120.0,
             cpu_tctl_c: 48.0 + phase * 20.0,
             cpu_package_power_w: 70.0 + phase * 40.0,
+            heartbeat_signal: 0.0,
+            heartbeat_enabled: false,
             timestamp_ms: (step as u64) * 1000,
         };
 

@@ -106,19 +106,37 @@ impl Model {
         neuron_count: usize,
     ) -> GpuResult<()> {
         if self.router.is_loaded() {
+            if let Some(tensor_name) = self
+                .router
+                .real_gpu_synapse_tensor_name()
+                .map(str::to_owned)
+            {
+                let signature = format!("{}::{tensor_name}", self.router.model_path());
+                let weights = self
+                    .router
+                    .registered_gpu_synapse_weights(&tensor_name)
+                    .map_err(|e| {
+                        GpuError::MemoryError(format!("GGUF synapse registration failed: {e}"))
+                    })?;
+                accelerator.load_synapse_weights_f16_registered(&signature, weights)?;
+                return Ok(());
+            }
+
             let signature = format!(
                 "{}::{}",
                 self.router.model_path(),
                 self.config.gpu_synapse_tensor_name
             );
-            let weights = self
-                .router
-                .registered_gpu_synapse_weights(&self.config.gpu_synapse_tensor_name)
-                .map_err(|e| {
-                    GpuError::MemoryError(format!("GGUF synapse registration failed: {e}"))
-                })?;
-            accelerator.load_synapse_weights_f16_registered(&signature, weights)?;
-            return Ok(());
+            if !self.config.gpu_synapse_tensor_name.trim().is_empty() {
+                let weights = self
+                    .router
+                    .registered_gpu_synapse_weights(&self.config.gpu_synapse_tensor_name)
+                    .map_err(|e| {
+                        GpuError::MemoryError(format!("GGUF synapse registration failed: {e}"))
+                    })?;
+                accelerator.load_synapse_weights_f16_registered(&signature, weights)?;
+                return Ok(());
+            }
         }
 
         let fallback_signature = format!("synthetic-f32::{neuron_count}");

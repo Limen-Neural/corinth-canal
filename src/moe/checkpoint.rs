@@ -1,15 +1,13 @@
-//! GGUF checkpoint parsing and mapped tensor access for the OlmoeRouter bridge.
+//! GGUF checkpoint parsing and mapped tensor access for the router bridge.
 
 use super::{
-    DEFAULT_GPU_SYNAPSE_TENSOR_NAME, GGML_TYPE_F16, GGML_TYPE_F32, GGUF_MAGIC,
+    GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_IQ3_S, GGML_TYPE_Q5_K, GGML_TYPE_Q8_0, GGUF_MAGIC,
     GGUF_VALUE_TYPE_ARRAY, GGUF_VALUE_TYPE_BOOL, GGUF_VALUE_TYPE_FLOAT32, GGUF_VALUE_TYPE_FLOAT64,
     GGUF_VALUE_TYPE_INT8, GGUF_VALUE_TYPE_INT16, GGUF_VALUE_TYPE_INT32, GGUF_VALUE_TYPE_INT64,
     GGUF_VALUE_TYPE_STRING, GGUF_VALUE_TYPE_UINT8, GGUF_VALUE_TYPE_UINT16, GGUF_VALUE_TYPE_UINT32,
-    GGUF_VALUE_TYPE_UINT64, GGUF_VERSION, OLMOE_HIDDEN, OLMOE_NUM_EXPERTS, OLMOE_NUM_LAYERS,
-    OlmoeMetadata, ROUTING_TENSOR_NAME,
+    GGUF_VALUE_TYPE_UINT64, GGUF_VERSION,
 };
 use crate::error::{HybridError, Result};
-use crate::types::EMBEDDING_DIM;
 use memmap2::{MmapMut, MmapOptions};
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -17,16 +15,17 @@ use std::fs::OpenOptions;
 use std::slice;
 
 #[derive(Debug)]
-pub(super) struct MappedOlmoeCheckpoint {
+pub(super) struct MappedGgufCheckpoint {
     mmap: MmapMut,
     tensors: HashMap<String, GgufTensorInfo>,
     registered_gpu_synapse: Option<RegisteredTensorSliceU16>,
+    metadata: GgufMetadata,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct GgufTensorInfo {
     pub(super) dims: Vec<usize>,
-    ggml_type: u32,
+    pub(super) ggml_type: u32,
     pub(super) relative_offset: usize,
     pub(super) absolute_offset: usize,
     pub(super) n_elements: usize,
@@ -46,8 +45,16 @@ struct RegisteredCudaRegion {
 }
 
 pub(super) struct ParsedCheckpointLayout {
-    pub(super) metadata: OlmoeMetadata,
+    pub(super) metadata: GgufMetadata,
     pub(super) tensors: HashMap<String, GgufTensorInfo>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct GgufMetadata {
+    architecture: String,
+    quantization: String,
+    strings: HashMap<String, String>,
+    numerics: HashMap<String, u64>,
 }
 
 struct GgufCursor<'a> {
@@ -56,95 +63,94 @@ struct GgufCursor<'a> {
 }
 
 pub(super) fn extract_token_embedding_from_checkpoint(
-    checkpoint: &mut MappedOlmoeCheckpoint,
+    checkpoint: &mut MappedGgufCheckpoint,
     path: &str,
     token_id: usize,
 ) -> Result<Vec<f32>> {
-    let info = checkpoint.tensor_info("token_embd.weight", path)?.clone();
-    let d0 = info.dims[0];
-    let d1 = info.dims.get(1).copied().unwrap_or(0);
+    checkpoint.extract_token_embedding("token_embd.weight", path, token_id)
+}
 
-    match info.ggml_type {
-        GGML_TYPE_F32 => {
-            let weights = checkpoint.f32_tensor("token_embd.weight", path)?;
-            if d0 == EMBEDDING_DIM {
+pub(super) fn extract_named_token_embedding_from_checkpoint(
+    checkpoint: &mut MappedGgufCheckpoint,
+    tensor_name: &str,
+    path: &str,
+    token_id: usize,
+) -> Result<Vec<f32>> {
+    checkpoint.extract_token_embedding(tensor_name, path, token_id)
+}
+
+impl GgufMetadata {
+    pub(super) fn architecture(&self) -> &str {
+        &self.architecture
+    }
+
+    pub(super) fn quantization(&self) -> &str {
+        &self.quantization
+    }
+
+    pub(super) fn string(&self, key: &str) -> Option<&str> {
+        self.strings.get(key).map(String::as_str)
+    }
+
+    pub(super) fn numeric(&self, key: &str) -> Option<usize> {
+        self.numerics.get(key).copied().map(|value| value as usize)
+    }
+}
+
+impl MappedGgufCheckpoint {
+    fn extract_token_embedding(
+        &mut self,
+        tensor_name: &str,
+        path: &str,
+        token_id: usize,
+    ) -> Result<Vec<f32>> {
+        let info = self.tensor_info(tensor_name, path)?.clone();
+        let d0 = info.dims[0];
+        let d1 = info.dims.get(1).copied().unwrap_or(0);
+
+        match info.ggml_type {
+            GGML_TYPE_F32 => {
+                let weights = self.f32_tensor(tensor_name, path)?;
                 if token_id >= d1 {
                     return Err(HybridError::InputLengthMismatch {
                         expected: d1,
                         got: token_id,
                     });
                 }
-                let start = token_id * EMBEDDING_DIM;
-                Ok(weights[start..start + EMBEDDING_DIM].to_vec())
-            } else if d1 == EMBEDDING_DIM {
-                if token_id >= d0 {
-                    return Err(HybridError::InputLengthMismatch {
-                        expected: d0,
-                        got: token_id,
-                    });
-                }
-                Ok((0..EMBEDDING_DIM)
-                    .map(|dim| weights[dim * d0 + token_id])
-                    .collect())
-            } else {
-                Err(HybridError::UnsupportedFormat(format!(
-                    "tensor 'token_embd.weight' has unexpected dimensions {:?}",
-                    info.dims
-                )))
+                Ok(weights[token_id * d0..token_id * d0 + d0].to_vec())
             }
-        }
-        GGML_TYPE_F16 => {
-            let byte_start = info.absolute_offset;
-            let byte_end = byte_start + info.n_elements * 2;
-            if byte_end > checkpoint.mmap.len() {
-                return Err(HybridError::ModelLoad {
-                    path: path.to_owned(),
-                    reason: "token_embd.weight F16 tensor extends beyond mapped file".into(),
-                });
-            }
-            let raw = &checkpoint.mmap[byte_start..byte_end];
-            let u16s: Vec<u16> = raw
-                .chunks_exact(2)
-                .map(|b| u16::from_le_bytes([b[0], b[1]]))
-                .collect();
-            if d0 == EMBEDDING_DIM {
+            GGML_TYPE_F16 => {
+                let values = self.u16_tensor_values(&info, path, tensor_name)?;
                 if token_id >= d1 {
                     return Err(HybridError::InputLengthMismatch {
                         expected: d1,
                         got: token_id,
                     });
                 }
-                let start = token_id * EMBEDDING_DIM;
-                Ok(u16s[start..start + EMBEDDING_DIM]
+                Ok(values[token_id * d0..token_id * d0 + d0]
                     .iter()
                     .map(|&b| f16_to_f32(b))
                     .collect())
-            } else if d1 == EMBEDDING_DIM {
-                if token_id >= d0 {
-                    return Err(HybridError::InputLengthMismatch {
-                        expected: d0,
-                        got: token_id,
-                    });
-                }
-                Ok((0..EMBEDDING_DIM)
-                    .map(|dim| f16_to_f32(u16s[dim * d0 + token_id]))
-                    .collect())
-            } else {
-                Err(HybridError::UnsupportedFormat(format!(
-                    "tensor 'token_embd.weight' has unexpected dimensions {:?}",
-                    info.dims
-                )))
             }
+            GGML_TYPE_Q8_0 => {
+                dequantize_row_q8_0(self.row_bytes(&info, token_id, path, tensor_name)?, d0)
+            }
+            GGML_TYPE_Q5_K => {
+                dequantize_row_q5_k(self.row_bytes(&info, token_id, path, tensor_name)?, d0)
+            }
+            GGML_TYPE_IQ3_S => Err(HybridError::UnsupportedFormat(format!(
+                "tensor '{tensor_name}' uses IQ3_S token embeddings; use llama.cpp prompt embeddings for this checkpoint"
+            ))),
+            other => Err(HybridError::UnsupportedFormat(format!(
+                "tensor '{tensor_name}' has unsupported ggml_type={other}"
+            ))),
         }
-        other => Err(HybridError::UnsupportedFormat(format!(
-            "tensor 'token_embd.weight' has unsupported ggml_type={other}"
-        ))),
     }
 }
 
 pub(super) fn probe_and_map_checkpoint(
     path: &str,
-) -> Result<(OlmoeMetadata, MappedOlmoeCheckpoint)> {
+) -> Result<(GgufMetadata, MappedGgufCheckpoint)> {
     let file = OpenOptions::new()
         .read(true)
         .open(path)
@@ -164,31 +170,14 @@ pub(super) fn probe_and_map_checkpoint(
         })?;
 
     let parsed = parse_checkpoint_layout(&mmap, path)?;
-    let routing =
-        parsed
-            .tensors
-            .get(ROUTING_TENSOR_NAME)
-            .ok_or_else(|| HybridError::MissingTensor {
-                name: ROUTING_TENSOR_NAME.into(),
-                path: path.to_owned(),
-            })?;
-    validate_routing_tensor(path, routing)?;
-
-    let synapse = parsed
-        .tensors
-        .get(DEFAULT_GPU_SYNAPSE_TENSOR_NAME)
-        .ok_or_else(|| HybridError::MissingTensor {
-            name: DEFAULT_GPU_SYNAPSE_TENSOR_NAME.into(),
-            path: path.to_owned(),
-        })?;
-    validate_gpu_synapse_tensor(path, DEFAULT_GPU_SYNAPSE_TENSOR_NAME, synapse)?;
 
     Ok((
-        parsed.metadata,
-        MappedOlmoeCheckpoint {
+        parsed.metadata.clone(),
+        MappedGgufCheckpoint {
             mmap,
             tensors: parsed.tensors,
             registered_gpu_synapse: None,
+            metadata: parsed.metadata,
         },
     ))
 }
@@ -233,18 +222,32 @@ pub(super) fn parse_checkpoint_layout(bytes: &[u8], path: &str) -> Result<Parsed
 
     let mut alignment = 32usize;
     let mut file_type = None;
-    let mut expert_count = OLMOE_NUM_EXPERTS;
+    let mut strings = HashMap::new();
+    let mut numerics = HashMap::new();
 
     for _ in 0..kv_count {
         let key = cursor.read_string(path)?;
         let value_type = cursor.read_u32(path)?;
         match key.as_str() {
             "general.alignment" => alignment = cursor.read_numeric_as_usize(value_type, path)?,
-            "general.file_type" => file_type = Some(cursor.read_numeric_as_u32(value_type, path)?),
-            "olmoe.expert_count" => {
-                expert_count = cursor.read_numeric_as_usize(value_type, path)?
+            "general.file_type" => {
+                let value = cursor.read_numeric_as_u32(value_type, path)?;
+                file_type = Some(value);
+                numerics.insert(key, value as u64);
             }
-            _ => cursor.skip_value(value_type, path)?,
+            "general.architecture" => {
+                let value = cursor.read_string(path)?;
+                strings.insert(key, value);
+            }
+            _ => {
+                if let Some(value) = cursor.read_numeric_value(value_type, path)? {
+                    numerics.insert(key, value);
+                } else if value_type == GGUF_VALUE_TYPE_STRING {
+                    strings.insert(key, cursor.read_string(path)?);
+                } else {
+                    cursor.skip_value(value_type, path)?;
+                }
+            }
         }
     }
 
@@ -289,17 +292,39 @@ pub(super) fn parse_checkpoint_layout(bytes: &[u8], path: &str) -> Result<Parsed
     }
 
     Ok(ParsedCheckpointLayout {
-        metadata: OlmoeMetadata {
-            hidden_size: OLMOE_HIDDEN,
-            num_layers: OLMOE_NUM_LAYERS,
-            num_experts: expert_count,
+        metadata: GgufMetadata {
+            architecture: strings
+                .get("general.architecture")
+                .cloned()
+                .unwrap_or_else(|| "unknown".into()),
             quantization: quantization_label(file_type),
+            strings,
+            numerics,
         },
         tensors,
     })
 }
 
-impl MappedOlmoeCheckpoint {
+impl MappedGgufCheckpoint {
+    pub(super) fn metadata(&self) -> &GgufMetadata {
+        &self.metadata
+    }
+
+    pub(super) fn has_tensor(&self, name: &str) -> bool {
+        self.tensors.contains_key(name)
+    }
+
+    pub(super) fn find_first_tensor_with_suffix(&self, suffix: &str) -> Option<&str> {
+        let mut matches: Vec<&str> = self
+            .tensors
+            .keys()
+            .map(String::as_str)
+            .filter(|name| name.ends_with(suffix))
+            .collect();
+        matches.sort_unstable_by_key(|name| tensor_block_sort_key(name));
+        matches.into_iter().next()
+    }
+
     pub(super) fn tensor_info<'a>(&'a self, name: &str, path: &str) -> Result<&'a GgufTensorInfo> {
         self.tensors
             .get(name)
@@ -334,6 +359,64 @@ impl MappedOlmoeCheckpoint {
         // slice borrows `self` for lifetime `'a`, keeping the mmap alive.
         let ptr = unsafe { self.mmap.as_ptr().add(start) as *const f32 };
         Ok(unsafe { slice::from_raw_parts(ptr, info.n_elements) })
+    }
+
+    fn u16_tensor_values(
+        &self,
+        info: &GgufTensorInfo,
+        path: &str,
+        tensor_name: &str,
+    ) -> Result<Vec<u16>> {
+        let byte_start = info.absolute_offset;
+        let byte_end = byte_start + info.n_elements * 2;
+        if byte_end > self.mmap.len() {
+            return Err(HybridError::ModelLoad {
+                path: path.to_owned(),
+                reason: format!("tensor '{tensor_name}' extends beyond mapped file"),
+            });
+        }
+        Ok(self.mmap[byte_start..byte_end]
+            .chunks_exact(2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+            .collect())
+    }
+
+    fn row_bytes<'a>(
+        &'a self,
+        info: &GgufTensorInfo,
+        row_idx: usize,
+        path: &str,
+        tensor_name: &str,
+    ) -> Result<&'a [u8]> {
+        let n_rows = info.dims.get(1).copied().unwrap_or(0);
+        if row_idx >= n_rows {
+            return Err(HybridError::InputLengthMismatch {
+                expected: n_rows,
+                got: row_idx,
+            });
+        }
+
+        let row_size = tensor_row_size(info.ggml_type, info.dims[0])?;
+        let start = info
+            .absolute_offset
+            .checked_add(row_idx.checked_mul(row_size).ok_or_else(|| {
+                HybridError::ModelLoad {
+                    path: path.to_owned(),
+                    reason: format!("tensor '{tensor_name}' row offset overflow"),
+                }
+            })?)
+            .ok_or_else(|| HybridError::ModelLoad {
+                path: path.to_owned(),
+                reason: format!("tensor '{tensor_name}' row offset overflow"),
+            })?;
+        let end = start + row_size;
+        if end > self.mmap.len() {
+            return Err(HybridError::ModelLoad {
+                path: path.to_owned(),
+                reason: format!("tensor '{tensor_name}' row extends beyond mapped file"),
+            });
+        }
+        Ok(&self.mmap[start..end])
     }
 
     pub(super) fn registered_f16_tensor<'a>(
@@ -448,44 +531,108 @@ impl Drop for RegisteredCudaRegion {
     }
 }
 
-fn validate_routing_tensor(path: &str, tensor: &GgufTensorInfo) -> Result<()> {
-    if tensor.ggml_type != GGML_TYPE_F32 {
-        return Err(HybridError::UnsupportedFormat(format!(
-            "tensor '{ROUTING_TENSOR_NAME}' must be F32 in '{path}'"
-        )));
+fn tensor_row_size(ggml_type: u32, width: usize) -> Result<usize> {
+    match ggml_type {
+        GGML_TYPE_Q8_0 => {
+            if width % 32 != 0 {
+                return Err(HybridError::UnsupportedFormat(format!(
+                    "Q8_0 tensor width {width} is not divisible by 32"
+                )));
+            }
+            Ok((width / 32) * (2 + 32))
+        }
+        GGML_TYPE_Q5_K => {
+            if width % 256 != 0 {
+                return Err(HybridError::UnsupportedFormat(format!(
+                    "Q5_K tensor width {width} is not divisible by 256"
+                )));
+            }
+            Ok((width / 256) * (2 + 2 + 12 + 32 + 128))
+        }
+        other => Err(HybridError::UnsupportedFormat(format!(
+            "row-size lookup is not implemented for ggml_type={other}"
+        ))),
     }
-    if tensor.dims.len() != 2 {
-        return Err(HybridError::UnsupportedFormat(format!(
-            "tensor '{ROUTING_TENSOR_NAME}' must be rank-2, got {:?}",
-            tensor.dims
-        )));
-    }
-    if tensor.n_elements != OLMOE_HIDDEN * OLMOE_NUM_EXPERTS {
-        return Err(HybridError::UnsupportedFormat(format!(
-            "tensor '{ROUTING_TENSOR_NAME}' has unexpected size {:?}",
-            tensor.dims
-        )));
-    }
-    Ok(())
 }
 
-fn validate_gpu_synapse_tensor(
-    path: &str,
-    tensor_name: &str,
-    tensor: &GgufTensorInfo,
-) -> Result<()> {
-    if tensor.ggml_type != GGML_TYPE_F16 {
+fn dequantize_row_q8_0(row: &[u8], width: usize) -> Result<Vec<f32>> {
+    if width % 32 != 0 {
         return Err(HybridError::UnsupportedFormat(format!(
-            "tensor '{tensor_name}' must be F16 in '{path}'"
+            "Q8_0 width {width} is not divisible by 32"
         )));
     }
-    if tensor.dims != [OLMOE_HIDDEN, OLMOE_HIDDEN] {
+
+    let mut out = Vec::with_capacity(width);
+    for block in row.chunks_exact(34) {
+        let d = f16_to_f32(u16::from_le_bytes([block[0], block[1]]));
+        for &quant in &block[2..34] {
+            out.push((quant as i8) as f32 * d);
+        }
+    }
+    Ok(out)
+}
+
+fn dequantize_row_q5_k(row: &[u8], width: usize) -> Result<Vec<f32>> {
+    if width % 256 != 0 {
         return Err(HybridError::UnsupportedFormat(format!(
-            "tensor '{tensor_name}' must be [2048, 2048], got {:?}",
-            tensor.dims
+            "Q5_K width {width} is not divisible by 256"
         )));
     }
-    Ok(())
+
+    let mut out = Vec::with_capacity(width);
+    for block in row.chunks_exact(176) {
+        let d = f16_to_f32(u16::from_le_bytes([block[0], block[1]]));
+        let dmin = f16_to_f32(u16::from_le_bytes([block[2], block[3]]));
+        let scales = &block[4..16];
+        let qh = &block[16..48];
+        let ql = &block[48..176];
+
+        let mut is = 0usize;
+        let mut u1 = 1u8;
+        let mut u2 = 2u8;
+
+        for ql_chunk in ql.chunks_exact(32) {
+            let (sc1, m1) = scale_min_k4(is, scales);
+            let (sc2, m2) = scale_min_k4(is + 1, scales);
+            let d1 = d * sc1 as f32;
+            let mn1 = dmin * m1 as f32;
+            let d2 = d * sc2 as f32;
+            let mn2 = dmin * m2 as f32;
+
+            for (lane, &q) in ql_chunk.iter().enumerate() {
+                let qh_byte = qh[lane];
+                let hi1 = if qh_byte & u1 != 0 { 16 } else { 0 };
+                let hi2 = if qh_byte & u2 != 0 { 16 } else { 0 };
+                out.push(d1 * ((q & 0x0F) + hi1) as f32 - mn1);
+                out.push(d2 * ((q >> 4) + hi2) as f32 - mn2);
+            }
+
+            is += 2;
+            u1 <<= 2;
+            u2 <<= 2;
+        }
+    }
+    Ok(out)
+}
+
+fn scale_min_k4(index: usize, scales: &[u8]) -> (u8, u8) {
+    if index < 4 {
+        (scales[index] & 63, scales[index + 4] & 63)
+    } else {
+        (
+            (scales[index + 4] & 0x0F) | ((scales[index - 4] >> 6) << 4),
+            (scales[index + 4] >> 4) | ((scales[index] >> 6) << 4),
+        )
+    }
+}
+
+fn tensor_block_sort_key(name: &str) -> (usize, &str) {
+    let block = name
+        .strip_prefix("blk.")
+        .and_then(|rest| rest.split_once('.'))
+        .and_then(|(idx, _)| idx.parse::<usize>().ok())
+        .unwrap_or(usize::MAX);
+    (block, name)
 }
 
 fn quantization_label(file_type: Option<u32>) -> String {
@@ -633,6 +780,29 @@ impl<'a> GgufCursor<'a> {
 
     fn read_numeric_as_usize(&mut self, value_type: u32, path: &str) -> Result<usize> {
         Ok(self.read_numeric_as_u32(value_type, path)? as usize)
+    }
+
+    fn read_numeric_value(&mut self, value_type: u32, path: &str) -> Result<Option<u64>> {
+        let value = match value_type {
+            GGUF_VALUE_TYPE_UINT8 => Some(self.read_u8(path)? as u64),
+            GGUF_VALUE_TYPE_INT8 => Some(self.read_u8(path)? as i8 as i64 as u64),
+            GGUF_VALUE_TYPE_UINT16 => Some(self.read_u16(path)? as u64),
+            GGUF_VALUE_TYPE_INT16 => Some(self.read_i16(path)? as i64 as u64),
+            GGUF_VALUE_TYPE_UINT32 => Some(self.read_u32(path)? as u64),
+            GGUF_VALUE_TYPE_INT32 => Some(self.read_i32(path)? as i64 as u64),
+            GGUF_VALUE_TYPE_UINT64 => Some(self.read_u64(path)?),
+            GGUF_VALUE_TYPE_INT64 => Some(self.read_i64(path)? as u64),
+            GGUF_VALUE_TYPE_BOOL => Some(self.read_u8(path)? as u64),
+            GGUF_VALUE_TYPE_FLOAT32 => Some(self.read_u32(path)? as u64),
+            GGUF_VALUE_TYPE_FLOAT64 => Some(self.read_u64(path)?),
+            GGUF_VALUE_TYPE_STRING | GGUF_VALUE_TYPE_ARRAY => None,
+            other => {
+                return Err(HybridError::UnsupportedFormat(format!(
+                    "unsupported GGUF value type {other}"
+                )));
+            }
+        };
+        Ok(value)
     }
 
     fn skip_value(&mut self, value_type: u32, path: &str) -> Result<()> {

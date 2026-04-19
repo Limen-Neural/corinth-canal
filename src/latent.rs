@@ -23,6 +23,12 @@ pub struct SnnLatentSnapshot {
     pub routing_entropy: f32,
     pub saaq_delta_q_prev: f32,
     pub saaq_delta_q_target: f32,
+    pub heartbeat_signal: f32,
+    pub heartbeat_enabled: bool,
+    pub gpu_temp_c: f32,
+    pub gpu_power_w: f32,
+    pub cpu_tctl_c: f32,
+    pub cpu_package_power_w: f32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -101,6 +107,12 @@ impl SnnLatentCalibrator {
             routing_entropy,
             saaq_delta_q_prev,
             saaq_delta_q_target,
+            heartbeat_signal: snap.heartbeat_signal,
+            heartbeat_enabled: snap.heartbeat_enabled,
+            gpu_temp_c: snap.gpu_temp_c,
+            gpu_power_w: snap.gpu_power_w,
+            cpu_tctl_c: snap.cpu_tctl_c,
+            cpu_package_power_w: snap.cpu_package_power_w,
         })
     }
 
@@ -124,7 +136,7 @@ impl SnnLatentCsvExporter {
         let mut writer = BufWriter::new(File::create(path)?);
         writeln!(
             writer,
-            "timestamp_ms,avg_pop_firing_rate_hz,membrane_dv_dt,routing_entropy,saaq_delta_q_prev,saaq_delta_q_target"
+            "timestamp_ms,avg_pop_firing_rate_hz,membrane_dv_dt,routing_entropy,saaq_delta_q_prev,saaq_delta_q_target,heartbeat_signal,heartbeat_enabled,gpu_temp_c,gpu_power_w,cpu_tctl_c,cpu_package_power_w"
         )?;
         Ok(Self { writer })
     }
@@ -132,13 +144,19 @@ impl SnnLatentCsvExporter {
     pub fn write_row(&mut self, snapshot: &SnnLatentSnapshot) -> Result<()> {
         writeln!(
             self.writer,
-            "{},{:.6},{:.6},{:.6},{:.6},{:.6}",
+            "{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{:.6},{:.6},{:.6},{:.6}",
             snapshot.timestamp_ms,
             snapshot.avg_pop_firing_rate_hz,
             snapshot.membrane_dv_dt,
             snapshot.routing_entropy,
             snapshot.saaq_delta_q_prev,
             snapshot.saaq_delta_q_target,
+            snapshot.heartbeat_signal,
+            snapshot.heartbeat_enabled as u8,
+            snapshot.gpu_temp_c,
+            snapshot.gpu_power_w,
+            snapshot.cpu_tctl_c,
+            snapshot.cpu_package_power_w,
         )?;
         Ok(())
     }
@@ -212,6 +230,8 @@ mod tests {
             gpu_power_w: 250.0,
             cpu_tctl_c: 70.0,
             cpu_package_power_w: 120.0,
+            heartbeat_signal: 0.0,
+            heartbeat_enabled: false,
         };
         let snap_b = TelemetrySnapshot {
             timestamp_ms: 1_100,
@@ -253,6 +273,12 @@ mod tests {
                 routing_entropy: 0.7,
                 saaq_delta_q_prev: 0.1,
                 saaq_delta_q_target: 0.2,
+                heartbeat_signal: 0.0,
+                heartbeat_enabled: false,
+                gpu_temp_c: 60.0,
+                gpu_power_w: 250.0,
+                cpu_tctl_c: 70.0,
+                cpu_package_power_w: 120.0,
             })
             .unwrap();
         exporter.flush().unwrap();
@@ -261,7 +287,7 @@ mod tests {
         let mut lines = contents.lines();
         assert_eq!(
             lines.next().unwrap(),
-            "timestamp_ms,avg_pop_firing_rate_hz,membrane_dv_dt,routing_entropy,saaq_delta_q_prev,saaq_delta_q_target"
+            "timestamp_ms,avg_pop_firing_rate_hz,membrane_dv_dt,routing_entropy,saaq_delta_q_prev,saaq_delta_q_target,heartbeat_signal,heartbeat_enabled,gpu_temp_c,gpu_power_w,cpu_tctl_c,cpu_package_power_w"
         );
         assert!(lines.next().is_some());
         assert!(lines.next().is_none());
@@ -279,6 +305,8 @@ mod tests {
             gpu_power_w: 250.0,
             cpu_tctl_c: 70.0,
             cpu_package_power_w: 120.0,
+            heartbeat_signal: 0.0,
+            heartbeat_enabled: false,
         };
         let snap_b = TelemetrySnapshot {
             timestamp_ms: 1_100,

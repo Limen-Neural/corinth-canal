@@ -6,7 +6,7 @@ use crate::gpu::{GpuAccelerator, GpuBuffer, GpuError, GpuResult};
 use crate::moe::OlmoeRouter;
 use crate::projector::Projector;
 use crate::types::{
-    EMBEDDING_DIM, ModelConfig, ModelOutput, RoutingMode, TelemetrySnapshot,
+    EMBEDDING_DIM, ModelConfig, ModelFamily, ModelOutput, RoutingMode, TelemetrySnapshot,
 };
 use std::path::Path;
 
@@ -31,21 +31,13 @@ impl Model {
     }
 
     pub fn new_with_projector_neurons(
-        config: ModelConfig,
+        mut config: ModelConfig,
         projector_neurons: usize,
     ) -> Result<Self> {
         if config.snn_steps == 0 {
             return Err(HybridError::InvalidConfig("snn_steps must be ≥ 1".into()));
         }
-        if config.num_experts == 0 {
-            return Err(HybridError::InvalidConfig("num_experts must be ≥ 1".into()));
-        }
-        if config.top_k_experts == 0 {
-            return Err(HybridError::InvalidConfig(
-                "top_k_experts must be ≥ 1".into(),
-            ));
-        }
-        if config.top_k_experts > config.num_experts {
+        if config.num_experts > 0 && config.top_k_experts > 0 && config.top_k_experts > config.num_experts {
             return Err(HybridError::InvalidConfig(format!(
                 "top_k_experts ({}) > num_experts ({})",
                 config.top_k_experts, config.num_experts
@@ -53,12 +45,25 @@ impl Model {
         }
 
         let projector = Projector::with_input_neurons(config.projection_mode, projector_neurons);
-        let router = OlmoeRouter::load_with_mode(
+        let router = OlmoeRouter::load_with_family_and_mode(
             &config.gguf_checkpoint_path,
             config.num_experts,
             config.top_k_experts,
+            config.model_family,
             config.routing_mode,
         )?;
+        if config.num_experts == 0 {
+            config.num_experts = router.checkpoint_num_experts();
+        }
+        if config.top_k_experts == 0 {
+            config.top_k_experts = router.checkpoint_expert_used_count();
+        }
+        if config.gpu_synapse_tensor_name.trim().is_empty() {
+            config.gpu_synapse_tensor_name = router
+                .preferred_gpu_synapse_tensor_name()
+                .unwrap_or_default()
+                .to_owned();
+        }
 
         Ok(Self {
             config,
@@ -213,13 +218,29 @@ impl Model {
     pub fn projector_mut(&mut self) -> &mut Projector {
         &mut self.projector
     }
+
+    pub fn router_family(&self) -> ModelFamily {
+        self.router.family()
+    }
+
+    pub fn router_architecture(&self) -> &str {
+        self.router.architecture()
+    }
+
+    pub fn routing_tensor_name(&self) -> &str {
+        self.router.routing_tensor_name()
+    }
+
+    pub fn synapse_source(&self) -> &str {
+        self.router.synapse_source()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::funnel::FUNNEL_HIDDEN_NEURONS;
-    use crate::types::{RoutingMode, ProjectionMode};
+    use crate::types::{ProjectionMode, RoutingMode};
 
     fn default_model() -> Model {
         Model::new(ModelConfig::default()).expect("default model init failed")
@@ -304,6 +325,8 @@ mod tests {
             gpu_power_w: 280.0,
             cpu_tctl_c: 65.0,
             cpu_package_power_w: 120.0,
+            heartbeat_signal: 0.0,
+            heartbeat_enabled: false,
             timestamp_ms: 1_000,
         };
         let loss = model

@@ -34,6 +34,7 @@
 pub mod error;
 pub mod funnel;
 pub mod gpu;
+pub mod heartbeat;
 pub mod latent;
 pub mod model;
 pub mod moe;
@@ -46,6 +47,7 @@ pub use funnel::{
     FunnelActivity, SignedSplitBankBridge, SparseGifHiddenLayer, TelemetryFunnel,
     FUNNEL_HIDDEN_NEURONS, FUNNEL_INPUT_NEURONS,
 };
+pub use heartbeat::HeartbeatInjector;
 pub use latent::{SaaqUpdateRule, SnnLatentCalibrator, SnnLatentCsvExporter, SnnLatentSnapshot};
 pub use telemetry::TelemetryEncoder;
-pub use types::{EMBEDDING_DIM, TelemetrySnapshot};
+pub use types::{EMBEDDING_DIM, HeartbeatConfig, ModelFamily, TelemetrySnapshot};

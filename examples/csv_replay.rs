@@ -113,6 +113,8 @@ fn main() -> corinth_canal::Result<()> {
             gpu_power_w,
             cpu_tctl_c,
             cpu_package_power_w,
+            heartbeat_signal: 0.0,
+            heartbeat_enabled: false,
         };
 
         let activity = funnel.encode_snapshot(&snap);
