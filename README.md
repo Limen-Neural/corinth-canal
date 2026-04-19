@@ -328,6 +328,83 @@ tick=2 best_walker=45 elapsed_us=842
 
 This path exercises the pure Spikenaut physics engine (GIF membrane + adaptive thresholds + two-pass SAT reduction) driven by realistic, pooled semantic pressure.
 
+### Validation Sweeps (dual-SAAQ, CSV-replay, repeat-aware)
+
+The `saaq_latent_calibration` runner is a sweep orchestrator over every discovered GGUF model. Per-run artifacts land under a fully-labeled directory tree:
+
+```text
+<VALIDATION_OUTPUT_ROOT>/<model_slug>/<telemetry_source>/<heartbeat_slug>/<run_id>/
+    tick_telemetry.txt
+    latent_telemetry.csv
+    run_manifest.json
+```
+
+where `<run_id>` = `<YYYYMMDDTHHMMSS>_<prompt_slug>_r<repeat_idx>` (UTC, sortable).
+
+#### Environment knobs
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `TELEMETRY_SOURCE` | `synthetic` | `synthetic` runs the in-process sinusoid; `csv` replays a canonical telemetry CSV. Must be set explicitly to `csv` for real-corpus runs — defaults are dependency-light on purpose. |
+| `TELEMETRY_CSV_PATH` | `/home/raulmc/Julia/Surrogate_Viz.jl/telemetry.csv` | Canonical-format CSV (`timestamp_ms,gpu_temp_c,gpu_power_w,cpu_tctl_c,cpu_package_power_w`). Missing/malformed → fallback to synthetic, stamped `synthetic_fallback` in the manifest. |
+| `TICKS` | `512` | Per-run tick count. Special case: when `TICKS=0` *and* `TELEMETRY_SOURCE=csv`, uses the exact CSV row count so a SymbolicRegression.jl corpus run covers exactly one loop with zero wraparound contamination. |
+| `REPEAT_COUNT` | `1` | Number of repeats per (model, telemetry, heartbeat) tuple. Deterministic inputs mean repeats should bit-match — divergence indicates scheduler noise. |
+| `VALIDATION_OUTPUT_ROOT` | `/home/raulmc/Julia/Surrogate_Viz.jl/outputs/saaq15` | Top of the per-run output tree. |
+| `HEARTBEAT_MATRIX` | `off,on` | Kept as-is for this round; amplitude/period sweep is future work. |
+| `SAAQ_RULE` | `saaq_v1_5` | Selects which rule fills the legacy `saaq_delta_q_{prev,target}` columns. Both rules are always emitted in the dual-SAAQ columns regardless. |
+
+#### Wraparound hygiene
+
+For `TELEMETRY_SOURCE=csv`, if `TICKS > rows.len()` the runner emits a warning:
+
+```text
+wraparound: ticks={N} > rows={M}; regression corpus may be contaminated by looped endings. Prefer TICKS=0 or TICKS<={M}.
+```
+
+The manifest records `wraparound_enabled`, `wraparound_loops`, and `ticks_effective` so any downstream filter can reject contaminated traces with one predicate. **For SymbolicRegression.jl corpus generation, always use `TICKS=0` (or `TICKS ≤ CSV row count`).** Wraparound is intended for smoke tests only.
+
+#### Dual-SAAQ CSV schema
+
+`latent_telemetry.csv` preserves the original 12 columns for backward compatibility with existing SR.jl scripts, and appends 4 new columns so both SAAQ rules can be fitted without rerunning:
+
+```text
+timestamp_ms, avg_pop_firing_rate_hz, membrane_dv_dt, routing_entropy,
+saaq_delta_q_prev, saaq_delta_q_target,           # primary rule (selected via SAAQ_RULE)
+heartbeat_signal, heartbeat_enabled,
+gpu_temp_c, gpu_power_w, cpu_tctl_c, cpu_package_power_w,
+saaq_delta_q_legacy_prev, saaq_delta_q_legacy_target,   # SAAQ 1.0 trajectory
+saaq_delta_q_v15_prev, saaq_delta_q_v15_target          # SAAQ 1.5 trajectory
+```
+
+The feature columns fed to SR.jl (`avg_pop_firing_rate_hz`, `membrane_dv_dt`, `routing_entropy`) are computed from activity/routing only and are therefore identical across rules — this makes dual-emission paired data for free. See `SnnDualLatentCalibrator` in `src/latent.rs`.
+
+#### Recipes
+
+Synthetic smoke (no CSV dependency, fast wiring check):
+
+```bash
+TICKS=64 HEARTBEAT_MATRIX=off \
+  cargo run --release --example saaq_latent_calibration
+```
+
+RE4 corpus run (exact CSV length, zero wraparound):
+
+```bash
+TELEMETRY_SOURCE=csv TICKS=0 REPEAT_COUNT=1 HEARTBEAT_MATRIX=off \
+  cargo run --release --example saaq_latent_calibration
+```
+
+Repeatability check (3 runs per model per heartbeat, deterministic inputs):
+
+```bash
+TELEMETRY_SOURCE=csv TICKS=0 REPEAT_COUNT=3 \
+  cargo run --release --example saaq_latent_calibration
+```
+
+#### CWD routing-CSV caveat
+
+`snn_gpu_routing_telemetry.csv` is hardcoded to the current working directory by `forward_gpu_temporal` / `compute_routing_telemetry` (see `src/model/core.rs`). `saaq_latent_calibration` drives the GPU via `tick_gpu_temporal`, which does **not** write that file, so it is safe today. If a future change starts invoking `forward_gpu_temporal` from the validation runner, every model's writes will silently merge into the same CWD-scoped file — move the sink into the per-run directory before doing that.
+
 ## GPU Routing Telemetry
 
 For high-performance expert routing analysis, the crate utilizes the NVIDIA Blackwell (RTX 5080) GPU to perform two-pass SAT reductions directly in VRAM. This telemetry path captures the final winning scores and walkers for every token processed.

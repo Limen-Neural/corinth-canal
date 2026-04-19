@@ -48,6 +48,9 @@ pub use funnel::{
     FUNNEL_HIDDEN_NEURONS, FUNNEL_INPUT_NEURONS,
 };
 pub use heartbeat::HeartbeatInjector;
-pub use latent::{SaaqUpdateRule, SnnLatentCalibrator, SnnLatentCsvExporter, SnnLatentSnapshot};
+pub use latent::{
+    SaaqUpdateRule, SnnDualLatentCalibrator, SnnLatentCalibrator, SnnLatentCsvExporter,
+    SnnLatentSnapshot,
+};
 pub use telemetry::TelemetryEncoder;
 pub use types::{EMBEDDING_DIM, HeartbeatConfig, ModelFamily, TelemetrySnapshot};
