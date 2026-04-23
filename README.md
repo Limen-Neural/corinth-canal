@@ -347,6 +347,7 @@ The `saaq_latent_calibration` runner is a sweep orchestrator over every discover
     tick_telemetry.txt
     latent_telemetry.csv
     run_manifest.json
+    summary.json
 ```
 
 where `<run_id>` = `<YYYYMMDDTHHMMSS>_<prompt_slug>_r<repeat_idx>` (UTC, sortable).
@@ -362,6 +363,9 @@ where `<run_id>` = `<YYYYMMDDTHHMMSS>_<prompt_slug>_r<repeat_idx>` (UTC, sortabl
 | `VALIDATION_OUTPUT_ROOT` | `./artifacts` | Top of the per-run output tree. Repo-relative by default; set to an absolute path to redirect runs into an external consumer. |
 | `HEARTBEAT_MATRIX` | `off,on` | Kept as-is for this round; amplitude/period sweep is future work. |
 | `SAAQ_RULE` | `saaq_v1_5` | Selects which rule fills the legacy `saaq_delta_q_{prev,target}` columns. Both rules are always emitted in the dual-SAAQ columns regardless. |
+| `LINEUP_CONFIG` | _(unset)_ | Optional path to a TOML file (e.g. `configs/saaq15_moe_lineup.toml`) specifying a lineup of GGUF checkpoints to sweep. Takes precedence over `GGUF_CHECKPOINT_PATH` and autodiscovery. |
+| `RUN_TAG` | _(unset)_ | Optional tag to append to the generated `run_id` (e.g. producing `YYYYMMDDTHHMMSS_prompt_r0_tag`). |
+| `STRICT_REPEAT_CHECK` | `false` | When true, strict bit-for-bit CSV comparison is performed across all repeats in a group. Mismatches are flagged in `summary.json`. |
 
 #### Wraparound hygiene
 
