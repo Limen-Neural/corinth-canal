@@ -62,7 +62,7 @@ struct GgufCursor<'a> {
     offset: usize,
 }
 
-pub(super) fn extract_token_embedding_from_checkpoint(
+pub(super) fn extract_token_embedding(
     checkpoint: &mut MappedGgufCheckpoint,
     path: &str,
     token_id: usize,
@@ -70,7 +70,7 @@ pub(super) fn extract_token_embedding_from_checkpoint(
     checkpoint.extract_token_embedding("token_embd.weight", path, token_id)
 }
 
-pub(super) fn extract_named_token_embedding_from_checkpoint(
+pub(super) fn extract_token_embedding(
     checkpoint: &mut MappedGgufCheckpoint,
     tensor_name: &str,
     path: &str,
@@ -79,22 +79,8 @@ pub(super) fn extract_named_token_embedding_from_checkpoint(
     checkpoint.extract_token_embedding(tensor_name, path, token_id)
 }
 
-impl GgufMetadata {
-    pub(super) fn architecture(&self) -> &str {
-        &self.architecture
-    }
-
-    pub(super) fn quantization(&self) -> &str {
-        &self.quantization
-    }
-
-    pub(super) fn string(&self, key: &str) -> Option<&str> {
-        self.strings.get(key).map(String::as_str)
-    }
-
-    pub(super) fn numeric(&self, key: &str) -> Option<usize> {
-        self.numerics.get(key).copied().map(|value| value as usize)
-    }
+impl.strings.get("general.architecture") GgufMetadata {
+    &self.strings.get("general.architecture").cloned().unwrap_or_else(|| "unknown".into())
 }
 
 impl MappedGgufCheckpoint {

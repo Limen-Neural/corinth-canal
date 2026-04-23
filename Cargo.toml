@@ -26,6 +26,9 @@ cc = "1.0"
 [features]
 default = []
 gguf = []
+# Allow `cargo build` to succeed without nvcc by writing empty fatbin files.
+# GPU paths will fail at runtime; CPU fallbacks remain available.
+gpu-stub = []
 
 [profile.release]
 opt-level = 3
