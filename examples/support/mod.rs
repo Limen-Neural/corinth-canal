@@ -3,7 +3,7 @@
 
 pub mod config;
 
-pub use config::{DEFAULT_OUTPUT_ROOT, DEFAULT_TICKS, RunConfig, output_root_from_env};
+pub use config::RunConfig;
 
 use corinth_canal::{
     HeartbeatConfig, HeartbeatInjector, ModelFamily, SaaqUpdateRule, EMBEDDING_DIM,
