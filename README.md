@@ -14,6 +14,16 @@ This repository originated from the `spikenaut-hybrid` codebase and is now organ
 
 Going forward, `corinth-canal` is the **single-crate reference implementation** for the `rmems` modular line. Proven components will graduate into separate `rmems-*` crates per `docs/PROMOTION_RULES.md`; `corinth-canal` itself stays as one crate.
 
+## SAAQ 1.5 Experiment MoE Lineup
+
+The following models are used in the SAAQ 1.5 baseline campaign:
+
+- `OMLoE-1B-7B.gguf` (baseline)
+- `L3.2-8X3B-MOE-Dark-Champion-Inst-18.4B-uncen-ablit_D_AU-q5_k_m.gguf`
+- `qwen3-moe-i1-IQ3_M.gguf`
+- `gemma-4-26B-A4B-it-UD-IQ4_NL.gguf`
+- `DeepSeek-Coder-V2-Lite-Instruct-Q6_K_L.gguf`
+
 ## Documentation
 
 - `docs/ARCHITECTURE.md` — block diagram, module map, and hidden control flow (CWD writes, env-resolved paths, fallback stamping).
@@ -366,16 +376,6 @@ where `<run_id>` = `<YYYYMMDDTHHMMSS>_<prompt_slug>_r<repeat_idx>` (UTC, sortabl
 | `LINEUP_CONFIG` | _(unset)_ | Optional path to a TOML file (e.g. `configs/saaq15_moe_lineup.toml`) specifying a lineup of GGUF checkpoints to sweep. Takes precedence over `GGUF_CHECKPOINT_PATH` and autodiscovery. |
 | `RUN_TAG` | _(unset)_ | Optional tag to append to the generated `run_id` (e.g. producing `YYYYMMDDTHHMMSS_prompt_r0_tag`). |
 | `STRICT_REPEAT_CHECK` | `false` | When true, strict bit-for-bit CSV comparison is performed across all repeats in a group. Mismatches are flagged in `summary.json`. |
-
-#### SAAQ 1.5 Experiment MoE Lineup
-
-The following models are used in the SAAQ 1.5 baseline campaign:
-
-- `OMLoE-1B-7B.gguf` (baseline)
-- `L3.2-8X3B-MOE-Dark-Champion-Inst-18.4B-uncen-ablit_D_AU-q5_k_m.gguf`
-- `qwen3-moe-i1-IQ3_M.gguf`
-- `gemma-4-26B-A4B-it-UD-IQ4_NL.gguf`
-- `DeepSeek-Coder-V2-Lite-Instruct-Q6_K_L.gguf`
 
 #### Wraparound hygiene
 
