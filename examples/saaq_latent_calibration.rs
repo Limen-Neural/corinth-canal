@@ -50,7 +50,50 @@ struct ValidationManifest {
     repeat_idx: usize,
     repeat_count: usize,
     cwd_routing_csv_contaminated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    routing_mode: Option<&'static str>,
     generated_files: Vec<String>,
+}
+
+/// Compact, stable per-run summary consumed by downstream aggregators. Lives
+/// alongside `run_manifest.json` inside every run directory.
+#[derive(Debug, Serialize)]
+struct RunSummary {
+    run_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run_tag: Option<String>,
+    model_slug: String,
+    model_family: String,
+    telemetry_source: String,
+    heartbeat_enabled: bool,
+    repeat_idx: usize,
+    repeat_count: usize,
+    saaq_rule: &'static str,
+    validation_status: &'static str,
+    run_dir: String,
+    manifest_path: String,
+    tick_telemetry_path: String,
+    latent_telemetry_path: String,
+    metrics: RunMetrics,
+    /// `None` when strict-repeat is disabled or `repeat_count < 2`; populated
+    /// to `"matched"` / `"mismatch"` by the strict-repeat pass at the end of
+    /// `main()` only when the check actually ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repeat_determinism: Option<&'static str>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct RunMetrics {
+    ticks_completed: usize,
+    latent_rows: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mean_tick_elapsed_us: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_timestamp_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_timestamp_ms: Option<u64>,
 }
 
 struct RunContext<'a> {
@@ -66,6 +109,9 @@ struct RunContext<'a> {
     output_root: PathBuf,
     model_family_override: Option<corinth_canal::ModelFamily>,
     saaq_rule: SaaqUpdateRule,
+    /// Already-sanitized run tag (or `None`). Sanitization is performed
+    /// once in `main()` so manifest/summary/run_id all see the same value.
+    run_tag: Option<&'a str>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -104,10 +150,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
+    // Sanitize the run tag once so run_id, manifest, and summary all agree
+    // on the canonical form.
+    let sanitized_tag: Option<String> = cfg.run_tag.as_deref().map(sanitize_run_tag);
+    let run_tag_ref: Option<&str> = sanitized_tag.as_deref();
+
     for spec in &cfg.validation_models {
         for repeat_idx in 0..cfg.repeat_count {
             for &heartbeat_enabled in &cfg.heartbeat_matrix {
-                let run_id = build_run_id(&cfg.prompt_profile, repeat_idx);
+                let run_id = build_run_id(&cfg.prompt_profile, repeat_idx, run_tag_ref);
                 let ctx = RunContext {
                     spec,
                     prompt_profile: &cfg.prompt_profile,
@@ -121,6 +172,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     output_root: cfg.output_root.clone(),
                     model_family_override: cfg.model_family_override,
                     saaq_rule: cfg.saaq_rule,
+                    run_tag: run_tag_ref,
                 };
                 run_validation(&ctx)?;
             }
@@ -141,6 +193,10 @@ fn run_validation(ctx: &RunContext<'_>) -> Result<(), Box<dyn std::error::Error>
     config.model_family = ctx.model_family_override.or(ctx.spec.family);
     config.heartbeat.enabled = ctx.heartbeat_enabled;
     config.gpu_routing_telemetry_path = Some(routing_csv_path.clone());
+    // Per-model routing mode override from lineup config (Stage-campaign).
+    if let Some(rm) = ctx.spec.routing_mode {
+        config.routing_mode = rm;
+    }
     let saaq_rule = ctx.saaq_rule;
 
     let mut accelerator = GpuAccelerator::new();
@@ -157,10 +213,16 @@ fn run_validation(ctx: &RunContext<'_>) -> Result<(), Box<dyn std::error::Error>
     let tick_path = run_dir.join("tick_telemetry.txt");
     let latent_path = run_dir.join("latent_telemetry.csv");
     let manifest_path = run_dir.join("run_manifest.json");
+    let summary_path = run_dir.join("summary.json");
     let generated_files = vec![
         tick_path.file_name().unwrap().to_string_lossy().into_owned(),
         latent_path.file_name().unwrap().to_string_lossy().into_owned(),
         manifest_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+        summary_path
             .file_name()
             .unwrap()
             .to_string_lossy()
@@ -171,58 +233,69 @@ fn run_validation(ctx: &RunContext<'_>) -> Result<(), Box<dyn std::error::Error>
             .to_string_lossy()
             .into_owned(),
     ];
+
+    // Metrics accumulator. Populated during the tick loop; stamped into
+    // summary.json at every terminal status (completed / *_failed).
+    let mut metrics = RunMetrics::default();
+
     let target_neurons = model.projector_mut().input_neurons();
     let (prompt_embedding, prompt_embedding_source) =
         match prompt_embedding_for_validation(&ctx.spec.path, ctx.prompt_text, target_neurons) {
             Ok(result) => result,
             Err(error) => {
-                write_manifest(
+                write_manifest_and_summary(
+                    ctx,
+                    &config,
+                    &model,
+                    &run_dir,
                     &manifest_path,
-                    build_manifest(
-                        ctx,
-                        &config,
-                        &model,
-                        &run_dir,
-                        "unavailable",
-                        saaq_rule,
-                        "prompt_embedding_failed",
-                        Some(error.to_string()),
-                        generated_files.clone(),
-                    ),
+                    &summary_path,
+                    &tick_path,
+                    &latent_path,
+                    "unavailable",
+                    saaq_rule,
+                    "prompt_embedding_failed",
+                    Some(error.to_string()),
+                    &metrics,
+                    generated_files.clone(),
                 )?;
                 return Err(error);
             }
         };
 
-    write_manifest(
+    write_manifest_and_summary(
+        ctx,
+        &config,
+        &model,
+        &run_dir,
         &manifest_path,
-        build_manifest(
+        &summary_path,
+        &tick_path,
+        &latent_path,
+        &prompt_embedding_source,
+        saaq_rule,
+        "preflight",
+        None,
+        &metrics,
+        generated_files.clone(),
+    )?;
+
+    if let Err(error) = model.prepare_gpu_temporal(&mut accelerator) {
+        write_manifest_and_summary(
             ctx,
             &config,
             &model,
             &run_dir,
+            &manifest_path,
+            &summary_path,
+            &tick_path,
+            &latent_path,
             &prompt_embedding_source,
             saaq_rule,
-            "preflight",
-            None,
+            "gpu_setup_failed",
+            Some(error.to_string()),
+            &metrics,
             generated_files.clone(),
-        ),
-    )?;
-
-    if let Err(error) = model.prepare_gpu_temporal(&mut accelerator) {
-        write_manifest(
-            &manifest_path,
-            build_manifest(
-                ctx,
-                &config,
-                &model,
-                &run_dir,
-                &prompt_embedding_source,
-                saaq_rule,
-                "gpu_setup_failed",
-                Some(error.to_string()),
-                generated_files,
-            ),
         )?;
         return Err(Box::new(error));
     }
@@ -246,6 +319,8 @@ fn run_validation(ctx: &RunContext<'_>) -> Result<(), Box<dyn std::error::Error>
         ctx.resolved.source_label,
     );
 
+    let mut elapsed_sum_us: u128 = 0;
+    let mut elapsed_count: usize = 0;
     let run_result = (|| -> Result<(), Box<dyn std::error::Error>> {
         for tick in 0..ctx.ticks {
             let snap = telemetry_snapshot_for_tick(tick, ctx.resolved);
@@ -254,9 +329,20 @@ fn run_validation(ctx: &RunContext<'_>) -> Result<(), Box<dyn std::error::Error>
             let input_spikes: Vec<f32> =
                 prompt_embedding.iter().map(|value| value * gain).collect();
 
+            // First/last timestamp bookkeeping. `telemetry_snapshot_for_tick`
+            // rewrites timestamps to `tick + 1` for 1-to-1 CSV join but we
+            // still want the summary to reflect the exact values emitted.
+            if metrics.first_timestamp_ms.is_none() {
+                metrics.first_timestamp_ms = Some(snap.timestamp_ms);
+            }
+            metrics.last_timestamp_ms = Some(snap.timestamp_ms);
+
             let started = Instant::now();
             let best_walker = model.tick_gpu_temporal(&mut accelerator, &input_spikes)?;
             let elapsed_us = started.elapsed().as_micros();
+            elapsed_sum_us = elapsed_sum_us.saturating_add(elapsed_us);
+            elapsed_count += 1;
+            metrics.ticks_completed = elapsed_count;
 
             let spikes = accelerator.temporal_spikes_to_vec(target_neurons)?;
             let active_neurons: Vec<usize> = spikes
@@ -284,6 +370,7 @@ fn run_validation(ctx: &RunContext<'_>) -> Result<(), Box<dyn std::error::Error>
             )?;
             let latent = calibrator.observe(&snap, &activity, &output)?;
             latent_exporter.write_row(&latent)?;
+            metrics.latent_rows += 1;
 
             writeln!(
                 tick_writer,
@@ -304,38 +391,51 @@ fn run_validation(ctx: &RunContext<'_>) -> Result<(), Box<dyn std::error::Error>
         Ok(())
     })();
 
+    // Finalize mean-tick metric (f64 microseconds). Safe for any
+    // elapsed_count <= usize::MAX; `as f64` lossiness is acceptable here.
+    if elapsed_count > 0 {
+        metrics.mean_tick_elapsed_us =
+            Some(elapsed_sum_us as f64 / elapsed_count as f64);
+    }
+
     if let Err(error) = run_result {
         let _ = latent_exporter.flush();
         let _ = tick_writer.flush();
-        write_manifest(
+        write_manifest_and_summary(
+            ctx,
+            &config,
+            &model,
+            &run_dir,
             &manifest_path,
-            build_manifest(
-                ctx,
-                &config,
-                &model,
-                &run_dir,
-                &prompt_embedding_source,
-                saaq_rule,
-                "tick_failed",
-                Some(error.to_string()),
-                generated_files.clone(),
-            ),
+            &summary_path,
+            &tick_path,
+            &latent_path,
+            &prompt_embedding_source,
+            saaq_rule,
+            "tick_failed",
+            Some(error.to_string()),
+            &metrics,
+            generated_files.clone(),
         )?;
         return Err(error);
     }
 
-    let manifest = build_manifest(
+    write_manifest_and_summary(
         ctx,
         &config,
         &model,
         &run_dir,
+        &manifest_path,
+        &summary_path,
+        &tick_path,
+        &latent_path,
         &prompt_embedding_source,
         saaq_rule,
         "completed",
         None,
+        &metrics,
         generated_files,
-    );
-    write_manifest(&manifest_path, manifest)?;
+    )?;
 
     println!(
         "validation_complete model_slug={} heartbeat_enabled={} repeat={}/{} run_dir={}",
@@ -419,7 +519,18 @@ fn build_manifest(
         // impossible regardless of whether `tick_gpu_temporal` or
         // `forward_gpu_temporal` is used.
         cwd_routing_csv_contaminated: config.gpu_routing_telemetry_path.is_none(),
+        run_tag: ctx.run_tag.map(|s| s.to_owned()),
+        routing_mode: Some(routing_mode_label(config.routing_mode)),
         generated_files,
+    }
+}
+
+fn routing_mode_label(mode: corinth_canal::moe::RoutingMode) -> &'static str {
+    use corinth_canal::moe::RoutingMode::*;
+    match mode {
+        StubUniform => "stub_uniform",
+        DenseSim => "dense_sim",
+        SpikingSim => "spiking_sim",
     }
 }
 
@@ -431,6 +542,103 @@ fn write_manifest(
     Ok(())
 }
 
+fn write_summary(
+    summary_path: &std::path::Path,
+    summary: &RunSummary,
+) -> Result<(), Box<dyn std::error::Error>> {
+    fs::write(summary_path, serde_json::to_string_pretty(summary)?)?;
+    Ok(())
+}
+
+/// Convenience wrapper that builds + writes both `run_manifest.json` and
+/// `summary.json`. Lives here (not in config.rs) because it pulls on
+/// several run-local paths + live model state.
+#[allow(clippy::too_many_arguments)]
+fn write_manifest_and_summary(
+    ctx: &RunContext<'_>,
+    config: &corinth_canal::model::ModelConfig,
+    model: &Model,
+    run_dir: &std::path::Path,
+    manifest_path: &PathBuf,
+    summary_path: &std::path::Path,
+    tick_path: &std::path::Path,
+    latent_path: &std::path::Path,
+    prompt_embedding_source: &str,
+    saaq_rule: SaaqUpdateRule,
+    validation_status: &'static str,
+    error: Option<String>,
+    metrics: &RunMetrics,
+    generated_files: Vec<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    write_manifest(
+        manifest_path,
+        build_manifest(
+            ctx,
+            config,
+            model,
+            run_dir,
+            prompt_embedding_source,
+            saaq_rule,
+            validation_status,
+            error,
+            generated_files,
+        ),
+    )?;
+    write_summary(
+        summary_path,
+        &build_summary(
+            ctx,
+            model.router_family(),
+            run_dir,
+            manifest_path,
+            tick_path,
+            latent_path,
+            saaq_rule,
+            validation_status,
+            metrics,
+        ),
+    )?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_summary(
+    ctx: &RunContext<'_>,
+    model_family: corinth_canal::ModelFamily,
+    run_dir: &std::path::Path,
+    manifest_path: &std::path::Path,
+    tick_path: &std::path::Path,
+    latent_path: &std::path::Path,
+    saaq_rule: SaaqUpdateRule,
+    validation_status: &'static str,
+    metrics: &RunMetrics,
+) -> RunSummary {
+    RunSummary {
+        run_id: ctx.run_id.clone(),
+        run_tag: ctx.run_tag.map(|s| s.to_owned()),
+        model_slug: ctx.spec.slug.clone(),
+        model_family: format!("{model_family:?}"),
+        telemetry_source: ctx.resolved.source_label.clone(),
+        heartbeat_enabled: ctx.heartbeat_enabled,
+        repeat_idx: ctx.repeat_idx,
+        repeat_count: ctx.repeat_count,
+        saaq_rule: saaq_rule_label(saaq_rule),
+        validation_status,
+        run_dir: run_dir.to_string_lossy().into_owned(),
+        manifest_path: manifest_path.to_string_lossy().into_owned(),
+        tick_telemetry_path: tick_path.to_string_lossy().into_owned(),
+        latent_telemetry_path: latent_path.to_string_lossy().into_owned(),
+        metrics: RunMetrics {
+            ticks_completed: metrics.ticks_completed,
+            latent_rows: metrics.latent_rows,
+            mean_tick_elapsed_us: metrics.mean_tick_elapsed_us,
+            first_timestamp_ms: metrics.first_timestamp_ms,
+            last_timestamp_ms: metrics.last_timestamp_ms,
+        },
+        repeat_determinism: None,
+    }
+}
+
 fn saaq_rule_label(rule: SaaqUpdateRule) -> &'static str {
     match rule {
         SaaqUpdateRule::LegacyV1_0 => "LegacyV1_0",
@@ -438,13 +646,42 @@ fn saaq_rule_label(rule: SaaqUpdateRule) -> &'static str {
     }
 }
 
-fn build_run_id(prompt_profile: &str, repeat_idx: usize) -> String {
-    format!(
-        "{}_{}_r{}",
-        format_local_timestamp_compact(),
-        prompt_profile,
-        repeat_idx
-    )
+fn build_run_id(prompt_profile: &str, repeat_idx: usize, run_tag: Option<&str>) -> String {
+    let timestamp = format_local_timestamp_compact();
+    match run_tag {
+        Some(tag) if !tag.is_empty() => {
+            format!("{timestamp}_{prompt_profile}_r{repeat_idx}_{tag}")
+        }
+        _ => format!("{timestamp}_{prompt_profile}_r{repeat_idx}"),
+    }
+}
+
+/// Keep only `[A-Za-z0-9._-]` from the raw tag; any other character becomes
+/// `_`. Runs of `_` are collapsed so the result never produces the visual
+/// `__` join with the preceding `r<idx>_`. Empty / whitespace-only -> `""`.
+fn sanitize_run_tag(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let mut out = String::with_capacity(trimmed.len());
+    let mut last_was_underscore = false;
+    for ch in trimmed.chars() {
+        let ok = ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-');
+        let c = if ok { ch } else { '_' };
+        if c == '_' {
+            if !last_was_underscore {
+                out.push('_');
+            }
+            last_was_underscore = true;
+        } else {
+            out.push(c);
+            last_was_underscore = false;
+        }
+    }
+    // Trim leading/trailing underscores introduced by sanitization so we
+    // never append `_r0__tag` or `_r0_tag_`.
+    out.trim_matches('_').to_owned()
 }
 
 fn build_run_dir(ctx: &RunContext<'_>) -> Result<PathBuf, Box<dyn std::error::Error>> {
