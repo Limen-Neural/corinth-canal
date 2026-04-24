@@ -150,15 +150,7 @@ fn main() -> corinth_canal::Result<()> {
             .sum::<usize>();
         let hidden_spikes = activity.spike_train.iter().map(Vec::len).sum::<usize>();
 
-        let mean_embed = output.embedding.iter().sum::<f32>() / EMBEDDING_DIM as f32;
-        let target = vec![mean_embed * 0.9; EMBEDDING_DIM];
-        let loss = output
-            .embedding
-            .iter()
-            .zip(target.iter())
-            .map(|(hidden, expected)| (hidden - expected).powi(2))
-            .sum::<f32>()
-            / EMBEDDING_DIM as f32;
+        let loss = mean_squared_error(output.embedding.as_slice(), target.as_slice());
 
         total_loss += loss;
         rows_processed += 1;
