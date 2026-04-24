@@ -57,3 +57,6 @@ pub use types::{EMBEDDING_DIM, HeartbeatConfig, ModelFamily, TelemetrySnapshot};
 
 //! Transformer/mod.rs missing tensor crate
 pub mod tensor;
+
+//! New folder name metric, came out of triple code duplication
+pub(crate) mod metric;
