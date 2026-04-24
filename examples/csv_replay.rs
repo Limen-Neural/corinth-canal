@@ -4,6 +4,9 @@
 
 mod support;
 
+use support::config::RunConfig;
+use support::default_spiking_model_config;
+
 use corinth_canal::{
     EMBEDDING_DIM, FUNNEL_HIDDEN_NEURONS, HybridError, TelemetryFunnel, model::Model,
     telemetry::TelemetrySnapshot,
