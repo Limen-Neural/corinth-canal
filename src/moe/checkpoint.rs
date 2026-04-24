@@ -327,7 +327,7 @@ impl MappedGgufCheckpoint {
         }
 
         let start = info.absolute_offset;
-        let end = start + info.n_elements * std::mem::size_of::<f32>();
+        let end = start + info.n_elements * size_of::<f32>();
         if end > self.mmap.len() {
             return Err(HybridError::ModelLoad {
                 path: path.to_owned(),
