@@ -20,9 +20,9 @@
 //! and emits a plain `Vec<f32>`.
 //! This keeps it reusable with any LLM backend.
 //!
-//! [`RateSum`]: crate::types::ProjectionMode::RateSum
-//! [`TemporalHistogram`]: crate::types::ProjectionMode::TemporalHistogram
-//! [`MembraneSnapshot`]: crate::types::ProjectionMode::MembraneSnapshot
+//! [`RateSum`]: ProjectionMode::RateSum
+//! [`TemporalHistogram`]: ProjectionMode::TemporalHistogram
+//! [`MembraneSnapshot`]: ProjectionMode::MembraneSnapshot
 
 use crate::error::{HybridError, Result};
 use crate::types::EMBEDDING_DIM;
