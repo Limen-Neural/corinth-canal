@@ -5,6 +5,7 @@ use super::{
     core::{IZ_NEURONS, N_NEURONS, resolve_gpu_routing_telemetry_path},
     telemetry_io::append_gpu_routing_telemetry_row,
 };
+use crate::funnel::active_neuron_indices;
 use crate::gpu::{GpuAccelerator, GpuError, GpuResult};
 use crate::types::{ModelOutput, TelemetrySnapshot};
 use crate::funnel::active_neuron_indices;
