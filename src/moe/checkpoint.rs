@@ -453,7 +453,7 @@ impl RegisteredTensorSliceU16 {
         path: &str,
     ) -> Result<Self> {
         let byte_len = n_elements
-            .checked_mul(std::mem::size_of::<u16>())
+            .checked_mul(size_of::<u16>())
             .ok_or_else(|| HybridError::ModelLoad {
                 path: path.to_owned(),
                 reason: format!("tensor '{tensor_name}' byte length overflow"),
