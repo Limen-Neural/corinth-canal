@@ -162,6 +162,7 @@ impl OlmoeRouter {
                     routing_tensor_name: "synthetic".into(),
                     preferred_gpu_synapse_tensor_name: None,
                     synapse_source: "synthetic-fallback".into(),
+                    real_gpu_synapse_tensor_name: None,
                 },
                 adapter: None,
                 routing_mode,
