@@ -1,5 +1,8 @@
 mod support;
 
+use support::{
+    config::RunConfig,
+};
 use corinth_canal::{
     FunnelActivity, HeartbeatInjector, SaaqUpdateRule, SnnDualLatentCalibrator,
     SnnLatentCsvExporter, gpu::GpuAccelerator, model::Model,
