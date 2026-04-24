@@ -25,6 +25,21 @@ fn parse_f32(v: &str) -> Option<f32> {
     if n.is_finite() { Some(n) } else { None }
 }
 
+fn mean_squared_error(output: &[f32], target: &[f32]) -> f32 {
+    if output.len() != target.len() || output.is_empty() {
+        return 0.0;
+    }
+    let sum = output
+        .iter()
+        .zip(target.iter())
+        .map(|(o, t)| {
+            let d = o - t;
+            d * d
+        })
+        .sum::<f32>();
+    sum / output.len() as f32
+}
+
 fn main() -> corinth_canal::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
