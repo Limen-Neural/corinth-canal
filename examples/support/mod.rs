@@ -283,6 +283,7 @@ pub fn discover_validation_models() -> Vec<ValidationModelSpec> {
                 family,
                 path: path.to_string_lossy().into_owned(),
                 routing_mode: None,
+                real_gpu_tensor_name: None,
             })
         })
         .collect()
