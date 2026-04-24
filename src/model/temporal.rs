@@ -62,12 +62,7 @@ impl Model {
             best_walker = walker;
 
             let spikes = accelerator.temporal_spikes_to_vec(neuron_count)?;
-            let active_neurons: Vec<usize> = spikes
-                .iter()
-                .enumerate()
-                .filter(|(_, v)| **v != 0)
-                .map(|(i, _)| i)
-                .collect();
+            
             spike_train.push(active_neurons);
         }
 
