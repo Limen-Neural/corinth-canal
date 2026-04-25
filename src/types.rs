@@ -94,8 +94,8 @@ pub struct ModelConfig {
 }
 
 impl ModelConfig {
-    pub(crate) fn model_path(&self) -> _ {
-        todo!()
+    pub(crate) fn model_path(&self) -> &str {
+        &self.gguf_checkpoint_path
     }
 }
 

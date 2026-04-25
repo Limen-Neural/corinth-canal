@@ -9,9 +9,9 @@ mod adapter;
 mod checkpoint;
 mod routing;
 
-use self::adapter::{ModelAdapter, resolve_adapter};
+use self::adapter::{resolve_adapter, ModelAdapter};
 use self::checkpoint::{
-    MappedGgufCheckpoint, extract_named_token_embedding_from_checkpoint, probe_and_map_checkpoint,
+    extract_named_token_embedding_from_checkpoint, probe_and_map_checkpoint, MappedGgufCheckpoint,
 };
 use self::routing::{
     checkpoint_gate_scores, normalize_l2, normalize_to_internal_embedding_dim, resample_embedding,
@@ -19,7 +19,7 @@ use self::routing::{
 };
 use crate::error::{HybridError, Result};
 pub use crate::types::RoutingMode;
-use crate::types::{EMBEDDING_DIM, ModelFamily};
+use crate::types::{ModelFamily, EMBEDDING_DIM};
 
 pub(super) const GGUF_MAGIC: [u8; 4] = [b'G', b'G', b'U', b'F'];
 pub(super) const GGUF_VERSION: u32 = 3;
@@ -548,6 +548,32 @@ mod tests {
         )
     }
 
+    fn build_quantized_synapse_checkpoint(gate_payload: Vec<u8>) -> Vec<u8> {
+        build_test_gguf(
+            vec![
+                (
+                    "blk.0.ffn_gate_inp.weight",
+                    vec![EMBEDDING_DIM, 64],
+                    GGML_TYPE_F32,
+                    gate_payload,
+                ),
+                (
+                    "blk.0.attn_q.weight",
+                    vec![EMBEDDING_DIM, EMBEDDING_DIM],
+                    GGML_TYPE_IQ3_S,
+                    Vec::new(),
+                ),
+                (
+                    "token_embd.weight",
+                    vec![EMBEDDING_DIM, 32],
+                    GGML_TYPE_F16,
+                    vec![0u8; EMBEDDING_DIM * 32 * 2],
+                ),
+            ],
+            32,
+        )
+    }
+
     fn stub() -> OlmoeRouter {
         OlmoeRouter::load_with_mode("", 8, 1, RoutingMode::StubUniform)
             .expect("stub load should succeed")
@@ -587,6 +613,25 @@ mod tests {
         assert_eq!(out.selected_experts[0], 0);
         assert_eq!(model.family(), ModelFamily::Olmoe);
         assert_eq!(model.routing_tensor_name(), "blk.0.ffn_gate_inp.weight");
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_quantized_synapse_probe_uses_synthetic_fallback() {
+        let gate_payload = vec![0u8; EMBEDDING_DIM * 64 * size_of::<f32>()];
+        let path = write_temp_file(
+            &build_quantized_synapse_checkpoint(gate_payload),
+            "iq3-s-synapse",
+        );
+
+        let metadata = OlmoeRouter::probe_model(path.to_str().unwrap(), None).unwrap();
+        assert_eq!(
+            metadata.preferred_gpu_synapse_tensor_name.as_deref(),
+            Some("blk.0.attn_q.weight")
+        );
+        assert_eq!(metadata.real_gpu_synapse_tensor_name, None);
+        assert_eq!(metadata.synapse_source, "synthetic-fallback");
 
         let _ = std::fs::remove_file(path);
     }
