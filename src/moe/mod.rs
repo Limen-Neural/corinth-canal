@@ -9,17 +9,17 @@ mod adapter;
 mod checkpoint;
 mod routing;
 
-use self::adapter::{ModelAdapter, resolve_adapter};
+use self::adapter::{resolve_adapter, ModelAdapter};
 use self::checkpoint::{
-    MappedGgufCheckpoint, extract_named_token_embedding_from_checkpoint, probe_and_map_checkpoint,
+    extract_named_token_embedding_from_checkpoint, probe_and_map_checkpoint, MappedGgufCheckpoint,
 };
 use self::routing::{
     checkpoint_gate_scores, normalize_l2, normalize_to_internal_embedding_dim, resample_embedding,
     softmax, synthetic_gate_scores, top_k_indices,
 };
 use crate::error::{HybridError, Result};
-use crate::types::{EMBEDDING_DIM, ModelFamily};
 pub use crate::types::RoutingMode;
+use crate::types::{ModelFamily, EMBEDDING_DIM};
 
 pub(super) const GGUF_MAGIC: [u8; 4] = [b'G', b'G', b'U', b'F'];
 pub(super) const GGUF_VERSION: u32 = 3;
@@ -42,13 +42,47 @@ pub(super) const GGUF_VALUE_TYPE_UINT64: u32 = 10;
 pub(super) const GGUF_VALUE_TYPE_INT64: u32 = 11;
 pub(super) const GGUF_VALUE_TYPE_FLOAT64: u32 = 12;
 
+impl RouterMetadata {
+    fn synthetic(family: ModelFamily, num_experts: usize, top_k: usize) -> Self {
+        Self {
+            family,
+            architecture: "stub".into(),
+            hidden_size: EMBEDDING_DIM,
+            num_layers: 0,
+            num_experts: num_experts.max(1),
+            expert_used_count: top_k.max(1),
+            quantization: "stub".into(),
+            routing_tensor_name: "synthetic".into(),
+            preferred_gpu_synapse_tensor_name: None,
+            synapse_source: "synthetic-fallback".into(),
+            real_gpu_synapse_tensor_name: None,
+        }
+    }
+
+    fn from_adapter(adapter: &ModelAdapter) -> Self {
+        Self {
+            family: adapter.family,
+            architecture: adapter.architecture.clone(),
+            hidden_size: adapter.hidden_size,
+            num_layers: adapter.num_layers,
+            num_experts: adapter.num_experts,
+            expert_used_count: adapter.expert_used_count,
+            quantization: adapter.quantization.clone(),
+            routing_tensor_name: adapter.routing_tensor.clone(),
+            preferred_gpu_synapse_tensor_name: adapter.preferred_gpu_synapse_tensor.clone(),
+            synapse_source: adapter.synapse_source_label().into(),
+            real_gpu_synapse_tensor_name: adapter.real_gpu_synapse_tensor.clone(),
+        }
+    }
+}
+
 pub struct OlmoeRouter {
+    metadata: RouterMetadata,
+    adapter: Option<ModelAdapter>,
     model_path: String,
     num_experts: usize,
     top_k: usize,
     loaded: bool,
-    metadata: RouterMetadata,
-    adapter: Option<ModelAdapter>,
     routing_mode: RoutingMode,
     expert_membranes: Vec<f32>,
     hidden_membranes: Vec<f32>,
@@ -69,6 +103,7 @@ pub struct RouterMetadata {
     pub routing_tensor_name: String,
     pub preferred_gpu_synapse_tensor_name: Option<String>,
     pub synapse_source: String,
+    pub real_gpu_synapse_tensor_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,18 +148,11 @@ impl OlmoeRouter {
                 num_experts: inferred_experts,
                 top_k: inferred_top_k,
                 loaded: false,
-                metadata: RouterMetadata {
-                    family: family_override.unwrap_or(ModelFamily::Olmoe),
-                    architecture: "stub".into(),
-                    hidden_size: EMBEDDING_DIM,
-                    num_layers: 0,
-                    num_experts: inferred_experts,
-                    expert_used_count: inferred_top_k,
-                    quantization: "stub".into(),
-                    routing_tensor_name: "synthetic".into(),
-                    preferred_gpu_synapse_tensor_name: None,
-                    synapse_source: "synthetic-fallback".into(),
-                },
+                metadata: RouterMetadata::synthetic(
+                    family_override.unwrap_or(ModelFamily::Olmoe),
+                    inferred_experts,
+                    inferred_top_k,
+                ),
                 adapter: None,
                 routing_mode,
                 expert_membranes: vec![0.0; inferred_experts],
@@ -197,10 +225,13 @@ impl OlmoeRouter {
     }
 
     pub fn extract_token_embedding(&mut self, token_id: usize) -> Result<Vec<f32>> {
-        let adapter = self.adapter.as_ref().ok_or_else(|| HybridError::ModelLoad {
-            path: self.model_path.clone(),
-            reason: "checkpoint not loaded".into(),
-        })?;
+        let adapter = self
+            .adapter
+            .as_ref()
+            .ok_or_else(|| HybridError::ModelLoad {
+                path: self.model_path.clone(),
+                reason: "checkpoint not loaded".into(),
+            })?;
         let checkpoint = self
             .checkpoint
             .as_mut()
@@ -234,18 +265,7 @@ impl OlmoeRouter {
     ) -> Result<(RouterMetadata, MappedGgufCheckpoint)> {
         let (_raw_metadata, checkpoint) = probe_and_map_checkpoint(path)?;
         let adapter = resolve_adapter(checkpoint.metadata(), &checkpoint, family_override, path)?;
-        let metadata = RouterMetadata {
-            family: adapter.family,
-            architecture: adapter.architecture.clone(),
-            hidden_size: adapter.hidden_size,
-            num_layers: adapter.num_layers,
-            num_experts: adapter.num_experts,
-            expert_used_count: adapter.expert_used_count,
-            quantization: adapter.quantization.clone(),
-            routing_tensor_name: adapter.routing_tensor.clone(),
-            preferred_gpu_synapse_tensor_name: adapter.preferred_gpu_synapse_tensor.clone(),
-            synapse_source: adapter.synapse_source_label().into(),
-        };
+        let metadata = RouterMetadata::from_adapter(&adapter);
         Ok((metadata, checkpoint))
     }
 
@@ -528,6 +548,32 @@ mod tests {
         )
     }
 
+    fn build_quantized_synapse_checkpoint(gate_payload: Vec<u8>) -> Vec<u8> {
+        build_test_gguf(
+            vec![
+                (
+                    "blk.0.ffn_gate_inp.weight",
+                    vec![EMBEDDING_DIM, 64],
+                    GGML_TYPE_F32,
+                    gate_payload,
+                ),
+                (
+                    "blk.0.attn_q.weight",
+                    vec![EMBEDDING_DIM, EMBEDDING_DIM],
+                    GGML_TYPE_IQ3_S,
+                    Vec::new(),
+                ),
+                (
+                    "token_embd.weight",
+                    vec![EMBEDDING_DIM, 32],
+                    GGML_TYPE_F16,
+                    vec![0u8; EMBEDDING_DIM * 32 * 2],
+                ),
+            ],
+            32,
+        )
+    }
+
     fn stub() -> OlmoeRouter {
         OlmoeRouter::load_with_mode("", 8, 1, RoutingMode::StubUniform)
             .expect("stub load should succeed")
@@ -567,6 +613,25 @@ mod tests {
         assert_eq!(out.selected_experts[0], 0);
         assert_eq!(model.family(), ModelFamily::Olmoe);
         assert_eq!(model.routing_tensor_name(), "blk.0.ffn_gate_inp.weight");
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_quantized_synapse_probe_uses_synthetic_fallback() {
+        let gate_payload = vec![0u8; EMBEDDING_DIM * 64 * size_of::<f32>()];
+        let path = write_temp_file(
+            &build_quantized_synapse_checkpoint(gate_payload),
+            "iq3-s-synapse",
+        );
+
+        let metadata = OlmoeRouter::probe_model(path.to_str().unwrap(), None).unwrap();
+        assert_eq!(
+            metadata.preferred_gpu_synapse_tensor_name.as_deref(),
+            Some("blk.0.attn_q.weight")
+        );
+        assert_eq!(metadata.real_gpu_synapse_tensor_name, None);
+        assert_eq!(metadata.synapse_source, "synthetic-fallback");
 
         let _ = std::fs::remove_file(path);
     }

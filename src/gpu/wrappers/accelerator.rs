@@ -813,21 +813,6 @@ mod tests {
         membrane[11] = 3.0;
         membrane[3 * TEMPORAL_BLOCK_SIZE as usize + 4] = 3.0;
 
-        {
-            let state = accelerator
-                .temporal_state
-                .as_mut()
-                .expect("temporal state should exist");
-            state
-                .membrane
-                .upload(&membrane)
-                .expect("membrane upload should succeed");
-            state
-                .adaptation
-                .upload(&adaptation)
-                .expect("adaptation upload should succeed");
-        }
-
         let stream = GpuAccelerator::new_stream().expect("stream should create");
         let tie_best = accelerator
             .saaq_find_best_walker(&stream, neuron_count)

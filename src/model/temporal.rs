@@ -1,13 +1,13 @@
-//! GPU temporal loop helpers for [`Model`](super::Model).
+//! GPU temporal loop helpers for [`Model`](Model).
 
+use super::Model;
 use super::{
-    core::{IZ_NEURONS, N_NEURONS, resolve_gpu_routing_telemetry_path},
+    core::{resolve_gpu_routing_telemetry_path, IZ_NEURONS, N_NEURONS},
     telemetry_io::append_gpu_routing_telemetry_row,
 };
-use super::Model;
+use crate::funnel::active_neuron_indices;
 use crate::gpu::{GpuAccelerator, GpuError, GpuResult};
 use crate::types::{ModelOutput, TelemetrySnapshot};
-
 impl Model {
     /// GPU-only temporal simulation with GIF (Generalized Integrate-and-Fire).
     /// Phase 1: reset + load_synapse_weights + project_snapshot_current
@@ -62,12 +62,7 @@ impl Model {
             best_walker = walker;
 
             let spikes = accelerator.temporal_spikes_to_vec(neuron_count)?;
-            let active_neurons: Vec<usize> = spikes
-                .iter()
-                .enumerate()
-                .filter(|(_, v)| **v != 0)
-                .map(|(i, _)| i)
-                .collect();
+            let active_neurons = active_neuron_indices(&spikes);
             spike_train.push(active_neurons);
         }
 
@@ -105,38 +100,20 @@ impl Model {
         accelerator: &mut GpuAccelerator,
         neuron_count: usize,
     ) -> GpuResult<()> {
-        if self.router.is_loaded() {
-            if let Some(tensor_name) = self
+        if let Some(tensor_name) = self
+            .router
+            .real_gpu_synapse_tensor_name()
+            .map(str::to_owned)
+        {
+            let signature = format!("{}::{tensor_name}", self.router.model_path());
+            let weights = self
                 .router
-                .real_gpu_synapse_tensor_name()
-                .map(str::to_owned)
-            {
-                let signature = format!("{}::{tensor_name}", self.router.model_path());
-                let weights = self
-                    .router
-                    .registered_gpu_synapse_weights(&tensor_name)
-                    .map_err(|e| {
-                        GpuError::MemoryError(format!("GGUF synapse registration failed: {e}"))
-                    })?;
-                accelerator.load_synapse_weights_f16_registered(&signature, weights)?;
-                return Ok(());
-            }
-
-            let signature = format!(
-                "{}::{}",
-                self.router.model_path(),
-                self.config.gpu_synapse_tensor_name
-            );
-            if !self.config.gpu_synapse_tensor_name.trim().is_empty() {
-                let weights = self
-                    .router
-                    .registered_gpu_synapse_weights(&self.config.gpu_synapse_tensor_name)
-                    .map_err(|e| {
-                        GpuError::MemoryError(format!("GGUF synapse registration failed: {e}"))
-                    })?;
-                accelerator.load_synapse_weights_f16_registered(&signature, weights)?;
-                return Ok(());
-            }
+                .registered_gpu_synapse_weights(&tensor_name)
+                .map_err(|e| {
+                    GpuError::MemoryError(format!("GGUF synapse registration failed: {e}"))
+                })?;
+            accelerator.load_synapse_weights_f16_registered(&signature, weights)?;
+            return Ok(());
         }
 
         let fallback_signature = format!("synthetic-f32::{neuron_count}");

@@ -2,10 +2,8 @@
 
 mod support;
 
-use corinth_canal::{
-    EMBEDDING_DIM, model::Model, moe::RoutingMode, telemetry::TelemetrySnapshot,
-};
-use support::{RunConfig, default_spiking_model_config};
+use corinth_canal::{EMBEDDING_DIM, model::Model, moe::RoutingMode, telemetry::TelemetrySnapshot};
+use support::{config::RunConfig, default_spiking_model_config};
 
 fn main() -> corinth_canal::Result<()> {
     let _ = dotenvy::from_filename(".env.local");

@@ -6,7 +6,7 @@ use crate::gpu::{GpuAccelerator, GpuBuffer, GpuError, GpuResult};
 use crate::moe::OlmoeRouter;
 use crate::projector::Projector;
 use crate::types::{
-    EMBEDDING_DIM, ModelConfig, ModelFamily, ModelOutput, RoutingMode, TelemetrySnapshot,
+    ModelConfig, ModelFamily, ModelOutput, RoutingMode, TelemetrySnapshot, EMBEDDING_DIM,
 };
 
 pub(super) const N_NEURONS: usize = 2048;
@@ -49,7 +49,10 @@ impl Model {
         if config.snn_steps == 0 {
             return Err(HybridError::InvalidConfig("snn_steps must be ≥ 1".into()));
         }
-        if config.num_experts > 0 && config.top_k_experts > 0 && config.top_k_experts > config.num_experts {
+        if config.num_experts > 0
+            && config.top_k_experts > 0
+            && config.top_k_experts > config.num_experts
+        {
             return Err(HybridError::InvalidConfig(format!(
                 "top_k_experts ({}) > num_experts ({})",
                 config.top_k_experts, config.num_experts
@@ -67,12 +70,18 @@ impl Model {
         if config.num_experts == 0 {
             config.num_experts = router.checkpoint_num_experts();
         }
+        if config.top_k_experts > 0 && config.top_k_experts > config.num_experts {
+            return Err(HybridError::InvalidConfig(format!(
+                "top_k_experts ({}) > num_experts ({})",
+                config.top_k_experts, config.num_experts
+            )));
+        }
         if config.top_k_experts == 0 {
             config.top_k_experts = router.checkpoint_expert_used_count();
         }
         if config.gpu_synapse_tensor_name.trim().is_empty() {
             config.gpu_synapse_tensor_name = router
-                .preferred_gpu_synapse_tensor_name()
+                .real_gpu_synapse_tensor_name()
                 .unwrap_or_default()
                 .to_owned();
         }
@@ -139,13 +148,7 @@ impl Model {
         }
 
         let output = self.forward(snap)?;
-        let loss = output
-            .embedding
-            .iter()
-            .zip(target.iter())
-            .map(|(hidden, expected)| (hidden - expected).powi(2))
-            .sum::<f32>()
-            / EMBEDDING_DIM as f32;
+        let loss = crate::metric::mean_squared_error(&output.embedding, target);
 
         Ok(loss)
     }
@@ -190,15 +193,7 @@ impl Model {
             })?;
 
         let target = resolve_gpu_routing_telemetry_path(&self.config);
-        append_gpu_routing_telemetry_row(
-            &target,
-            token_idx,
-            final_score,
-            final_walker,
-            0,
-            0.0,
-            0.0,
-        )
+        append_gpu_routing_telemetry_row(&target, token_idx, final_score, final_walker, 0, 0.0, 0.0)
     }
 
     pub fn reset(&mut self) {

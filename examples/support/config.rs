@@ -11,8 +11,6 @@
 //!
 //! Fields map 1:1 to the entries documented in `.env.example`.
 
-#![allow(dead_code)]
-
 use std::path::{Path, PathBuf};
 
 use corinth_canal::{HeartbeatConfig, ModelFamily, SaaqUpdateRule, moe::RoutingMode};
@@ -76,10 +74,8 @@ impl RunConfig {
         let prompt_text = prompt_text_for_profile(&prompt_profile);
         let gguf_checkpoint_path = std::env::var("GGUF_CHECKPOINT_PATH").unwrap_or_default();
         let lineup_config_path = lineup_config_path_from_env();
-        let validation_models = resolve_validation_models(
-            lineup_config_path.as_deref(),
-            &gguf_checkpoint_path,
-        );
+        let validation_models =
+            resolve_validation_models(lineup_config_path.as_deref(), &gguf_checkpoint_path);
         Self {
             prompt_profile: prompt_profile.clone(),
             prompt_text,
@@ -152,19 +148,21 @@ struct RawLineupModel {
 /// `discover_validation_models`); unknown family / routing-mode slugs are
 /// reported to stderr but do not abort the run.
 fn load_lineup_file(path: &Path) -> Result<Vec<ValidationModelSpec>, Box<dyn std::error::Error>> {
-    let raw = std::fs::read_to_string(path)
-        .map_err(|e| format!("read {}: {e}", path.display()))?;
-    let parsed: RawLineup = toml::from_str(&raw)
-        .map_err(|e| format!("parse {}: {e}", path.display()))?;
+    let raw = std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let parsed: RawLineup =
+        toml::from_str(&raw).map_err(|e| format!("parse {}: {e}", path.display()))?;
 
     let mut out = Vec::with_capacity(parsed.model.len());
     for entry in parsed.model {
-        let RawLineupModel { slug, family, path: gguf_path, routing_mode } = entry;
+        let RawLineupModel {
+            slug,
+            family,
+            path: gguf_path,
+            routing_mode,
+        } = entry;
         let trimmed_path = gguf_path.trim();
         if trimmed_path.is_empty() {
-            eprintln!(
-                "lineup_config: skipping entry slug={slug}: empty path",
-            );
+            eprintln!("lineup_config: skipping entry slug={slug}: empty path",);
             continue;
         }
         if !Path::new(trimmed_path).exists() {
@@ -197,6 +195,7 @@ fn load_lineup_file(path: &Path) -> Result<Vec<ValidationModelSpec>, Box<dyn std
             family: parsed_family,
             path: trimmed_path.to_owned(),
             routing_mode: parsed_routing,
+            real_gpu_tensor_name: None,
         });
     }
 
