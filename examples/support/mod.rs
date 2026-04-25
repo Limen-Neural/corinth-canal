@@ -3,8 +3,8 @@
 pub mod config;
 
 use corinth_canal::{
-    EMBEDDING_DIM, HeartbeatConfig, HeartbeatInjector, ModelFamily, SaaqUpdateRule,
     model::ModelConfig, moe::OlmoeRouter, moe::RoutingMode, projector::ProjectionMode,
+    HeartbeatConfig, HeartbeatInjector, ModelFamily, SaaqUpdateRule, EMBEDDING_DIM,
 };
 use std::io::Error;
 use std::path::{Path, PathBuf};
@@ -283,7 +283,7 @@ pub fn discover_validation_models() -> Vec<ValidationModelSpec> {
             let path = root.join(rel);
             path.exists().then(|| ValidationModelSpec {
                 slug: slug.into(),
-                family: None,
+                family,
                 path: path.to_string_lossy().into_owned(),
                 routing_mode: None,
                 real_gpu_tensor_name: None,
@@ -659,7 +659,7 @@ fn resample_embedding(input: &[f32], target_len: usize) -> Vec<f32> {
             out.push(input[lo]);
         } else {
             let t = source - lo as f32;
-            out.push(input[lo] * (1.0 - t) + input[hi]);
+            out.push(input[lo] * (1.0 - t) + input[hi] * t);
         }
     }
     out
