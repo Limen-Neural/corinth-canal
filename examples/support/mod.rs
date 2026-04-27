@@ -7,16 +7,15 @@ pub use config::RunConfig;
 
 use corinth_canal::{
     model::ModelConfig, moe::OlmoeRouter, moe::RoutingMode, projector::ProjectionMode,
-    HeartbeatConfig, HeartbeatInjector, ModelFamily, SaaqUpdateRule, EMBEDDING_DIM,
+    HeartbeatConfig, ModelFamily, SaaqUpdateRule,
 };
 use std::io::Error;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub const DEFAULT_MATH_PROMPT_TOKEN_IDS: [usize; 9] =
-    [402, 11492, 286, 257, 4568, 318, 12056, 4202, 13];
 pub const DEFAULT_MATH_PROMPT_TEXT: &str = "The derivative of a constant is mathematically zero.";
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ValidationModelSpec {
     pub slug: String,
@@ -26,19 +25,6 @@ pub struct ValidationModelSpec {
     /// (`configs/saaq15_moe_lineup.toml`); autodiscovered / CLI-injected
     /// specs leave this `None` and fall back to `ModelConfig::routing_mode`.
     pub routing_mode: Option<RoutingMode>,
-    pub real_gpu_tensor_name: Option<String>, // ValidationModelSpec is not RouterMetadata
-}
-
-pub fn gguf_checkpoint_path_or_default() -> String {
-    std::env::var("GGUF_CHECKPOINT_PATH").unwrap_or_default()
-}
-
-pub fn required_gguf_checkpoint_path() -> Result<String, Box<dyn std::error::Error>> {
-    let model_path = gguf_checkpoint_path_or_default();
-    if model_path.trim().is_empty() {
-        return Err(Error::other("GGUF_CHECKPOINT_PATH must point to a GGUF checkpoint").into());
-    }
-    Ok(model_path)
 }
 
 pub fn default_spiking_model_config(gguf_checkpoint_path: String, snn_steps: usize) -> ModelConfig {
@@ -69,23 +55,6 @@ pub fn default_spiking_model_config(gguf_checkpoint_path: String, snn_steps: usi
         heartbeat: heartbeat_config_from_env(),
         gpu_routing_telemetry_path: None,
     }
-}
-
-pub fn mean_pool_prompt_embeddings(
-    model: &mut corinth_canal::model::Model,
-    token_ids: &[usize],
-) -> corinth_canal::Result<Vec<f32>> {
-    let mut pooled = vec![0.0f32; EMBEDDING_DIM];
-
-    for &token in token_ids {
-        let emb = model.extract_token_embedding(token)?;
-        for (dst, src) in pooled.iter_mut().zip(emb.iter()) {
-            *dst += *src;
-        }
-    }
-
-    normalize_embedding(&mut pooled);
-    Ok(pooled)
 }
 
 pub fn prompt_profile_slug() -> String {
@@ -167,6 +136,7 @@ pub fn heartbeat_modes_for_matrix() -> Vec<bool> {
     vec![false, true]
 }
 
+#[allow(dead_code)]
 pub fn prompt_embedding_for_validation(
     model_path: &str,
     prompt_text: &str,
@@ -187,6 +157,7 @@ pub fn prompt_embedding_for_validation(
     }
 }
 
+#[allow(dead_code)]
 pub fn pooled_prompt_embedding_from_llama_cpp(
     model_path: &str,
     prompt_text: &str,
@@ -237,7 +208,6 @@ pub fn discover_validation_models() -> Vec<ValidationModelSpec> {
                 family,
                 path,
                 routing_mode: None,
-                real_gpu_tensor_name: None,
             }];
         }
     }
@@ -289,7 +259,6 @@ pub fn discover_validation_models() -> Vec<ValidationModelSpec> {
                 family,
                 path: path.to_string_lossy().into_owned(),
                 routing_mode: None,
-                real_gpu_tensor_name: None,
             })
         })
         .collect()
@@ -319,6 +288,7 @@ pub enum TelemetrySource {
 /// `source_label` is what lands in the directory path and manifest: one of
 /// `synthetic`, `synthetic_fallback`, or `csv_<stem>` (e.g. `csv_re4` for
 /// `telemetry.csv`). `rows` is only populated on a successful CSV load.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ResolvedTelemetry {
     pub source: TelemetrySource,
@@ -328,6 +298,7 @@ pub struct ResolvedTelemetry {
 }
 
 impl ResolvedTelemetry {
+    #[allow(dead_code)]
     pub fn row_count(&self) -> Option<usize> {
         self.rows.as_ref().map(|rows| rows.len())
     }
@@ -519,6 +490,7 @@ fn csv_source_label(path: &Path) -> String {
 /// `timestamp_ms` is always rewritten to `tick + 1` so the resulting latent
 /// CSV joins 1-to-1 against `tick_telemetry.txt` on tick index regardless
 /// of the underlying CSV's absolute timestamps.
+#[allow(dead_code)]
 pub fn telemetry_snapshot_for_tick(
     tick: usize,
     resolved: &ResolvedTelemetry,
@@ -543,6 +515,7 @@ fn parse_finite_f32(value: &str) -> Option<f32> {
     }
 }
 
+#[allow(dead_code)]
 pub fn synthetic_base_snapshot(tick: usize) -> corinth_canal::TelemetrySnapshot {
     let phase = tick as f32 * 0.041;
     corinth_canal::TelemetrySnapshot {
@@ -556,14 +529,12 @@ pub fn synthetic_base_snapshot(tick: usize) -> corinth_canal::TelemetrySnapshot 
     }
 }
 
+#[allow(dead_code)]
 pub fn heartbeat_gain(signal: f32) -> f32 {
     (1.0 + signal * 0.28).max(0.15)
 }
 
-pub fn heartbeat_injector_from_env() -> HeartbeatInjector {
-    HeartbeatInjector::new(heartbeat_config_from_env())
-}
-
+#[allow(dead_code)]
 fn llama_embedding_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
     llama_embedding_binary_optional().ok_or_else(|| {
         Error::other("LLAMA_EMBEDDING_BIN must point to llama.cpp's llama-embedding binary").into()
@@ -602,6 +573,7 @@ pub fn routing_mode_override_from_env() -> Option<RoutingMode> {
     }
 }
 
+#[allow(dead_code)]
 fn parse_llama_embedding_payload(stdout: &str) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
     #[derive(serde::Deserialize)]
     struct JsonEmbeddingRow {
@@ -637,6 +609,7 @@ fn slug_from_path(path: &str) -> String {
         .to_ascii_lowercase()
 }
 
+#[allow(dead_code)]
 fn resample_embedding(input: &[f32], target_len: usize) -> Vec<f32> {
     if target_len == 0 {
         return Vec::new();
@@ -668,6 +641,7 @@ fn resample_embedding(input: &[f32], target_len: usize) -> Vec<f32> {
     out
 }
 
+#[allow(dead_code)]
 fn normalize_embedding(values: &mut [f32]) {
     let l2_norm = values.iter().map(|&v| v * v).sum::<f32>().sqrt();
     if l2_norm > 1e-8 {
@@ -677,6 +651,7 @@ fn normalize_embedding(values: &mut [f32]) {
     }
 }
 
+#[allow(dead_code)]
 fn synthetic_text_embedding(prompt_text: &str, target_dim: usize) -> Vec<f32> {
     if target_dim == 0 {
         return Vec::new();
@@ -701,6 +676,7 @@ fn synthetic_text_embedding(prompt_text: &str, target_dim: usize) -> Vec<f32> {
     embedding
 }
 
+#[allow(dead_code)]
 fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     for &byte in bytes {

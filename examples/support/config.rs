@@ -13,15 +13,15 @@
 
 use std::path::{Path, PathBuf};
 
-use corinth_canal::{HeartbeatConfig, ModelFamily, SaaqUpdateRule, moe::RoutingMode};
+use corinth_canal::{ModelFamily, SaaqUpdateRule, moe::RoutingMode};
 use serde::Deserialize;
 
 use super::{
     ResolvedTelemetry, ValidationModelSpec, discover_validation_models, env_flag,
-    heartbeat_config_from_env, heartbeat_modes_for_matrix, llama_embedding_binary_optional,
-    model_family_override_from_env, parse_family_slug, parse_routing_mode, prompt_profile_slug,
-    prompt_text_for_profile, repeat_count_from_env, resolve_telemetry_source,
-    routing_mode_override_from_env, saaq_update_rule_from_env, ticks_from_env,
+    heartbeat_modes_for_matrix, model_family_override_from_env, parse_family_slug,
+    parse_routing_mode, prompt_profile_slug, prompt_text_for_profile, repeat_count_from_env,
+    resolve_telemetry_source, routing_mode_override_from_env, saaq_update_rule_from_env,
+    ticks_from_env,
 };
 
 /// Default output root for per-run artifacts when `VALIDATION_OUTPUT_ROOT`
@@ -35,26 +35,24 @@ pub const DEFAULT_TICKS: usize = 512;
 /// Aggregated env-driven configuration for an example binary run.
 ///
 /// Every field is populated by `RunConfig::from_env()` in one pass. Binaries
-/// should not read `std::env` directly.
+/// should not read `std::env` directly. Each example binary reads only a
+/// subset of these fields, so the struct is tagged `#[allow(dead_code)]`
+/// to silence per-binary `field never read` warnings.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RunConfig {
     pub prompt_profile: String,
     pub prompt_text: &'static str,
     pub ticks: usize,
     pub repeat_count: usize,
-    pub heartbeat: HeartbeatConfig,
     pub heartbeat_matrix: Vec<bool>,
     pub telemetry: ResolvedTelemetry,
     pub output_root: PathBuf,
     pub model_family_override: Option<ModelFamily>,
     pub saaq_rule: SaaqUpdateRule,
-    pub llama_embedding_bin: Option<PathBuf>,
     pub validation_models: Vec<ValidationModelSpec>,
     pub gguf_checkpoint_path: String,
     pub routing_mode_override: Option<RoutingMode>,
-    /// Path to the parsed lineup config (if `LINEUP_CONFIG` was set and
-    /// successfully resolved). Stamped into the run manifest for provenance.
-    pub lineup_config_path: Option<PathBuf>,
     /// Free-form run tag from `RUN_TAG`. Empty / unset maps to `None` so
     /// callers can just do `if let Some(tag) = cfg.run_tag { ... }`.
     pub run_tag: Option<String>,
@@ -73,6 +71,10 @@ impl RunConfig {
         let prompt_profile = prompt_profile_slug();
         let prompt_text = prompt_text_for_profile(&prompt_profile);
         let gguf_checkpoint_path = std::env::var("GGUF_CHECKPOINT_PATH").unwrap_or_default();
+        // Local binding only — used to pick the lineup TOML below. The
+        // resolved path is intentionally not stamped onto `RunConfig` yet;
+        // when campaign provenance is added back to `ValidationManifest`,
+        // re-introduce both fields together in one focused commit.
         let lineup_config_path = lineup_config_path_from_env();
         let validation_models =
             resolve_validation_models(lineup_config_path.as_deref(), &gguf_checkpoint_path);
@@ -81,17 +83,14 @@ impl RunConfig {
             prompt_text,
             ticks: ticks_from_env(DEFAULT_TICKS),
             repeat_count: repeat_count_from_env(),
-            heartbeat: heartbeat_config_from_env(),
             heartbeat_matrix: heartbeat_modes_for_matrix(),
             telemetry: resolve_telemetry_source(),
             output_root: output_root_from_env(),
             model_family_override: model_family_override_from_env(),
             saaq_rule: saaq_update_rule_from_env(),
-            llama_embedding_bin: llama_embedding_binary_optional(),
             validation_models,
             gguf_checkpoint_path,
             routing_mode_override: routing_mode_override_from_env(),
-            lineup_config_path,
             run_tag: run_tag_from_env(),
             strict_repeat_check: strict_repeat_check_from_env(),
         }
@@ -195,7 +194,6 @@ fn load_lineup_file(path: &Path) -> Result<Vec<ValidationModelSpec>, Box<dyn std
             family: parsed_family,
             path: trimmed_path.to_owned(),
             routing_mode: parsed_routing,
-            real_gpu_tensor_name: None,
         });
     }
 
