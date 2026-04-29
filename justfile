@@ -69,6 +69,13 @@ saaq-sweep:
 bridge:
     cargo run --release --example telemetry_bridge
 
+# Probe the configured lineup (LINEUP_CONFIG / GGUF_CHECKPOINT_PATH /
+# autodiscovery) and print the preferred GPU synapse tensor + ggml_type per
+# model. Writes <output_root>/synapse_diagnostic.json. No SAAQ ticks, no
+# heartbeat, no campaign side-effects (issue #31).
+synapse-diag:
+    cargo run --release --example synapse_diagnostic
+
 # Wipe everything under ./artifacts except the .gitkeep anchor.
 clean-artifacts:
     find artifacts -mindepth 1 ! -name .gitkeep -exec rm -rf {} +

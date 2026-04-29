@@ -3,7 +3,7 @@
 use super::telemetry_io::append_gpu_routing_telemetry_row;
 use crate::error::{HybridError, Result};
 use crate::gpu::{GpuAccelerator, GpuBuffer, GpuError, GpuResult};
-use crate::moe::OlmoeRouter;
+use crate::moe::{GpuSynapseTensorDescriptor, OlmoeRouter};
 use crate::projector::Projector;
 use crate::types::{
     ModelConfig, ModelFamily, ModelOutput, RoutingMode, TelemetrySnapshot, EMBEDDING_DIM,
@@ -241,6 +241,10 @@ impl Model {
 
     pub fn synapse_source(&self) -> &str {
         self.router.synapse_source()
+    }
+
+    pub fn preferred_gpu_synapse_tensor_descriptor(&self) -> Option<GpuSynapseTensorDescriptor> {
+        self.router.preferred_gpu_synapse_tensor_descriptor()
     }
 }
 

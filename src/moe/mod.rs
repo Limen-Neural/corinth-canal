@@ -42,6 +42,74 @@ pub(super) const GGUF_VALUE_TYPE_UINT64: u32 = 10;
 pub(super) const GGUF_VALUE_TYPE_INT64: u32 = 11;
 pub(super) const GGUF_VALUE_TYPE_FLOAT64: u32 = 12;
 
+/// Diagnostic snapshot of the GGUF tensor that the adapter wants to use as
+/// the GPU synapse weight source for this router. Returned by
+/// [`OlmoeRouter::preferred_gpu_synapse_tensor_descriptor`]; only consumed
+/// by `examples/synapse_diagnostic.rs` today, but exposed publicly so
+/// future runner / manifest stamping can reuse it without re-mapping the
+/// checkpoint. Carries no live tensor data.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GpuSynapseTensorDescriptor {
+    pub name: String,
+    pub ggml_type_id: u32,
+    pub ggml_type_label: &'static str,
+    pub dims: Vec<usize>,
+    /// `true` iff the runtime currently has a code path that can consume
+    /// this `ggml_type` as GPU synapse weights. Today only `F16` qualifies
+    /// (see `OlmoeRouter::registered_gpu_synapse_weights`); every other
+    /// type falls back to synthetic synapses.
+    pub has_dequant_path: bool,
+}
+
+/// Map a GGUF `ggml_type` u32 to a short human label. Returns `"unknown"`
+/// for type ids the diagnostic doesn't recognize. The numeric ids are
+/// stable in `ggml.h`, so hard-coding them here keeps the diagnostic
+/// readable for the full SAAQ 1.5 lineup without adding new
+/// `pub(super) const`s that aren't otherwise referenced.
+pub fn ggml_type_label(ggml_type: u32) -> &'static str {
+    match ggml_type {
+        GGML_TYPE_F32 => "F32",
+        GGML_TYPE_F16 => "F16",
+        2 => "Q4_0",
+        3 => "Q4_1",
+        6 => "Q5_0",
+        7 => "Q5_1",
+        GGML_TYPE_Q8_0 => "Q8_0",
+        9 => "Q8_1",
+        10 => "Q2_K",
+        11 => "Q3_K",
+        12 => "Q4_K",
+        GGML_TYPE_Q5_K => "Q5_K",
+        14 => "Q6_K",
+        15 => "Q8_K",
+        16 => "IQ2_XXS",
+        17 => "IQ2_XS",
+        18 => "IQ3_XXS",
+        19 => "IQ1_S",
+        20 => "IQ4_NL",
+        GGML_TYPE_IQ3_S => "IQ3_S",
+        22 => "IQ2_S",
+        23 => "IQ4_XS",
+        24 => "I8",
+        25 => "I16",
+        26 => "I32",
+        27 => "I64",
+        28 => "F64",
+        29 => "IQ1_M",
+        30 => "BF16",
+        _ => "unknown",
+    }
+}
+
+/// Returns `true` iff the runtime can consume `ggml_type` as the source
+/// for the GPU synapse tensor today. Mirrors the F16-only contract of
+/// `OlmoeRouter::registered_gpu_synapse_weights` /
+/// `MappedGgufCheckpoint::registered_f16_tensor`. Every other type falls
+/// back to synthetic synapses.
+pub fn synapse_dequant_path_supported(ggml_type: u32) -> bool {
+    ggml_type == GGML_TYPE_F16
+}
+
 impl RouterMetadata {
     fn synthetic(family: ModelFamily, num_experts: usize, top_k: usize) -> Self {
         Self {
@@ -424,6 +492,26 @@ impl OlmoeRouter {
         &self.metadata.synapse_source
     }
 
+    /// Diagnostic descriptor for the preferred GPU synapse tensor.
+    ///
+    /// Returns `None` when the router has no checkpoint mapped (synthetic
+    /// stub), when the adapter found no candidate tensor, or when the
+    /// candidate tensor cannot be located in the mapped checkpoint. Used by
+    /// `examples/synapse_diagnostic.rs` to surface the fallback reason for
+    /// quantized GGUF models without dereferencing tensor payload bytes.
+    pub fn preferred_gpu_synapse_tensor_descriptor(&self) -> Option<GpuSynapseTensorDescriptor> {
+        let name = self.metadata.preferred_gpu_synapse_tensor_name.as_deref()?;
+        let checkpoint = self.checkpoint.as_ref()?;
+        let info = checkpoint.tensor_info(name, &self.model_path).ok()?;
+        Some(GpuSynapseTensorDescriptor {
+            name: name.to_owned(),
+            ggml_type_id: info.ggml_type,
+            ggml_type_label: ggml_type_label(info.ggml_type),
+            dims: info.dims.clone(),
+            has_dequant_path: synapse_dequant_path_supported(info.ggml_type),
+        })
+    }
+
     pub fn num_experts(&self) -> usize {
         self.num_experts
     }
@@ -676,6 +764,81 @@ mod tests {
         assert_eq!(metadata.synapse_source, "synthetic-fallback");
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_preferred_synapse_descriptor_iq3s_has_no_dequant_path() {
+        let gate_payload = vec![0u8; EMBEDDING_DIM * 64 * size_of::<f32>()];
+        let path = write_temp_file(
+            &build_quantized_synapse_checkpoint(gate_payload),
+            "iq3-s-descriptor",
+        );
+
+        let model =
+            OlmoeRouter::load_with_mode(path.to_str().unwrap(), 0, 0, RoutingMode::StubUniform)
+                .unwrap();
+        let descriptor = model
+            .preferred_gpu_synapse_tensor_descriptor()
+            .expect("preferred descriptor must be exposed for quantized attn_q");
+
+        assert_eq!(descriptor.name, "blk.0.attn_q.weight");
+        assert_eq!(descriptor.ggml_type_id, GGML_TYPE_IQ3_S);
+        assert_eq!(descriptor.ggml_type_label, "IQ3_S");
+        assert_eq!(descriptor.dims, vec![EMBEDDING_DIM, EMBEDDING_DIM]);
+        assert!(!descriptor.has_dequant_path);
+        assert_eq!(model.real_gpu_synapse_tensor_name(), None);
+        assert_eq!(model.synapse_source(), "synthetic-fallback");
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_preferred_synapse_descriptor_f16_has_dequant_path() {
+        let gate_payload = vec![0u8; EMBEDDING_DIM * 64 * size_of::<f32>()];
+        let path = write_temp_file(&build_real_size_checkpoint(gate_payload), "f16-descriptor");
+
+        let model =
+            OlmoeRouter::load_with_mode(path.to_str().unwrap(), 0, 0, RoutingMode::StubUniform)
+                .unwrap();
+        let descriptor = model
+            .preferred_gpu_synapse_tensor_descriptor()
+            .expect("preferred descriptor must be exposed for F16 attn_q");
+
+        assert_eq!(descriptor.name, "blk.0.attn_q.weight");
+        assert_eq!(descriptor.ggml_type_id, GGML_TYPE_F16);
+        assert_eq!(descriptor.ggml_type_label, "F16");
+        assert_eq!(descriptor.dims, vec![EMBEDDING_DIM, EMBEDDING_DIM]);
+        assert!(descriptor.has_dequant_path);
+        assert_eq!(
+            model.real_gpu_synapse_tensor_name(),
+            Some("blk.0.attn_q.weight")
+        );
+        assert_eq!(model.synapse_source(), "real");
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_ggml_type_label_covers_lineup_quants() {
+        // Sanity: the labels we surface in synapse_diagnostic.json should
+        // never read "unknown" for the SAAQ 1.5 lineup's known quant types.
+        for &(ty, expected) in &[
+            (0u32, "F32"),
+            (1u32, "F16"),
+            (8u32, "Q8_0"),
+            (12u32, "Q4_K"),
+            (13u32, "Q5_K"),
+            (14u32, "Q6_K"),
+            (20u32, "IQ4_NL"),
+            (21u32, "IQ3_S"),
+        ] {
+            assert_eq!(ggml_type_label(ty), expected, "ggml_type={ty}");
+        }
+        assert_eq!(ggml_type_label(9999), "unknown");
+        assert!(synapse_dequant_path_supported(GGML_TYPE_F16));
+        for &ty in &[0u32, 8, 12, 13, 14, 20, 21] {
+            assert!(!synapse_dequant_path_supported(ty), "ggml_type={ty}");
+        }
     }
 
     #[test]

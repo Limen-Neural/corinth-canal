@@ -16,6 +16,12 @@ use std::process::Command;
 
 pub const DEFAULT_MATH_PROMPT_TEXT: &str = "The derivative of a constant is mathematically zero.";
 
+pub const DEFAULT_RUST_SYNTAX_PROMPT_TEXT: &str =
+    "fn main() { println!(\"Hello from a spiking MoE model.\"); }";
+
+pub const DEFAULT_ENGLISH_SNN_PROMPT_TEXT: &str =
+    "Let's teach this MoE model about SNN.";
+
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ValidationModelSpec {
@@ -28,6 +34,7 @@ pub struct ValidationModelSpec {
     pub routing_mode: Option<RoutingMode>,
 }
 
+#[allow(dead_code)]
 pub fn default_spiking_model_config(gguf_checkpoint_path: String, snn_steps: usize) -> ModelConfig {
     let probe = if gguf_checkpoint_path.trim().is_empty() {
         None
@@ -67,6 +74,8 @@ pub fn prompt_profile_slug() -> String {
 pub fn prompt_text_for_profile(profile: &str) -> &'static str {
     match profile {
         "math_logic" | "math" => DEFAULT_MATH_PROMPT_TEXT,
+        "rust_syntax" | "rust" => DEFAULT_RUST_SYNTAX_PROMPT_TEXT,
+        "english_snn" | "english" | "snn" => DEFAULT_ENGLISH_SNN_PROMPT_TEXT,
         _ => DEFAULT_MATH_PROMPT_TEXT,
     }
 }
@@ -114,6 +123,7 @@ pub fn saaq_update_rule_from_env() -> SaaqUpdateRule {
     }
 }
 
+#[allow(dead_code)]
 pub fn heartbeat_config_from_env() -> HeartbeatConfig {
     HeartbeatConfig {
         enabled: env_flag("HEARTBEAT_ENABLED", false),
@@ -687,6 +697,7 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
     hash
 }
 
+#[allow(dead_code)]
 fn env_f32(key: &str, default_value: f32) -> f32 {
     std::env::var(key)
         .ok()
