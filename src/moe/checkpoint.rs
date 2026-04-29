@@ -440,6 +440,30 @@ impl MappedGgufCheckpoint {
             .expect("registered above")
             .as_slice())
     }
+
+    /// Dequantize a full Q8_0 tensor to a flat `Vec<f32>`.
+    ///
+    /// Iterates over every row of the tensor and applies the Q8_0
+    /// block-scale dequantization, producing `dims[0] * dims[1]` output
+    /// elements laid out row-major. `dims[0]` must be divisible by 32.
+    pub(super) fn dequantize_q8_0_tensor(&self, name: &str, path: &str) -> Result<Vec<f32>> {
+        let info = self.tensor_info(name, path)?.clone();
+        if info.ggml_type != GGML_TYPE_Q8_0 {
+            return Err(HybridError::UnsupportedFormat(format!(
+                "tensor '{name}' must be Q8_0, got ggml_type={}",
+                info.ggml_type
+            )));
+        }
+        let width = info.dims[0];
+        let n_rows = info.dims.get(1).copied().unwrap_or(1);
+        let mut out = Vec::with_capacity(width * n_rows);
+        for row in 0..n_rows {
+            let row_bytes = self.row_bytes(&info, row, path, name)?;
+            let dequantized = dequantize_row_q8_0(row_bytes, width)?;
+            out.extend_from_slice(&dequantized);
+        }
+        Ok(out)
+    }
 }
 
 impl RegisteredTensorSliceU16 {

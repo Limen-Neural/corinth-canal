@@ -105,7 +105,7 @@ impl Model {
         // F16 support from `self.config.gpu_synapse_tensor_name`: doing so
         // can hit quantized (IQ/Q) tensors on non-F16 GGUF checkpoints and
         // abort the SAAQ campaign. If no real F16 tensor is validated, fall
-        // through directly to the synthetic-fallback path below.
+        // through to the Q8_0 dequantized path or the synthetic-fallback below.
         if let Some(tensor_name) = self
             .router
             .real_gpu_synapse_tensor_name()
@@ -120,6 +120,36 @@ impl Model {
                 })?;
             accelerator.load_synapse_weights_f16_registered(&signature, weights)?;
             return Ok(());
+        }
+
+        // Q8_0 dequantized path: only invoked when the adapter confirmed that
+        // the preferred tensor is Q8_0 with width divisible by 32.  We check
+        // the GPU signature before dequantizing to avoid the allocation cost
+        // on repeated calls.
+        if let Some(tensor_name) = self
+            .router
+            .dequantized_q8_0_synapse_tensor_name()
+            .map(str::to_owned)
+        {
+            let signature =
+                format!("dequantized-q8_0::{}::{tensor_name}", self.router.model_path());
+            if accelerator.synapse_signature() != Some(signature.as_str()) {
+                let weights = self
+                    .router
+                    .dequantized_q8_0_synapse_weights(&tensor_name)
+                    .map_err(|e| {
+                        GpuError::MemoryError(format!("Q8_0 dequantization failed: {e}"))
+                    })?;
+                let expected = neuron_count * neuron_count;
+                if weights.len() == expected {
+                    accelerator.load_synapse_weights_named(&signature, &weights)?;
+                    return Ok(());
+                }
+                // Tensor element count does not match neuron_count²; fall
+                // through to the synthetic-fallback below.
+            } else {
+                return Ok(());
+            }
         }
 
         let fallback_signature = format!("synthetic-f32::{neuron_count}");
