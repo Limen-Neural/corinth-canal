@@ -411,22 +411,19 @@ TICKS=64 HEARTBEAT_MATRIX=off \
   cargo run --release --example saaq_latent_calibration
 ```
 
-Stage-0 campaign entrypoint (checked-in lineup config):
+Stage-0 campaign entrypoint (three-phase recipe over the checked-in lineup):
 
 ```bash
 just saaq-campaign
 ```
 
-First smoke-test control settings:
+`just saaq-campaign` runs three phases back-to-back, each with `REPEAT_COUNT=2` and `SAAQ_RULE=saaq_v1_5`:
 
-```bash
-SAAQ_RULE=saaq_v1_5 \
-TELEMETRY_SOURCE=synthetic \
-HEARTBEAT_MATRIX=off \
-REPEAT_COUNT=2 \
-STRICT_REPEAT_CHECK=true \
-just saaq-campaign
-```
+1. `TELEMETRY_SOURCE=synthetic`, `HEARTBEAT_MATRIX=off`, `RUN_TAG=campaign_syn_off`
+2. `TELEMETRY_SOURCE=csv`, `HEARTBEAT_MATRIX=off`, `RUN_TAG=campaign_csv_off`
+3. `TELEMETRY_SOURCE=csv`, `HEARTBEAT_MATRIX=on`, `RUN_TAG=campaign_csv_on`
+
+Set `LINEUP_CONFIG` in `.env.local` to override the default lineup (`configs/saaq15_moe_lineup.toml`). Phases 2 and 3 require `TELEMETRY_CSV_PATH` to point at a canonical telemetry CSV. With the default 5-model lineup the campaign appends `5 × 3 × 2 = 30` rows to `artifacts/index.csv`. Set `STRICT_REPEAT_CHECK=true` to fail fast on any repeat-0 vs repeat-k `latent_telemetry.csv` divergence.
 
 RE4 corpus run (exact CSV length, zero wraparound):
 
