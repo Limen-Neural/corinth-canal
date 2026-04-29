@@ -33,11 +33,27 @@ replay PATH:
 saaq:
     cargo run --release --example saaq_latent_calibration
 
-# Campaign entrypoint: use the checked-in SAAQ 1.5 MoE lineup by default.
-# Callers can still override any env var inline, e.g.:
-#   just saaq-campaign REPEAT_COUNT=2 HEARTBEAT_MATRIX=off
+# Phases: synthetic/heartbeat-off, csv/heartbeat-off, csv/heartbeat-on.
+# Reads LINEUP_CONFIG and (for phases 2-3) TELEMETRY_CSV_PATH from .env.local.
+# Falls back to configs/saaq15_moe_lineup.toml when LINEUP_CONFIG is unset.
+# Full SAAQ 1.5 MoE baseline campaign (3 phases x REPEAT_COUNT runs per model).
 saaq-campaign:
-    LINEUP_CONFIG=configs/saaq15_moe_lineup.toml cargo run --release --example saaq_latent_calibration
+    @echo ">>> phase 1/3: synthetic, heartbeat off, repeat=2"
+    LINEUP_CONFIG="${LINEUP_CONFIG:-configs/saaq15_moe_lineup.toml}" \
+        SAAQ_RULE=saaq_v1_5 REPEAT_COUNT=2 TELEMETRY_SOURCE=synthetic \
+        HEARTBEAT_MATRIX=off RUN_TAG=campaign_syn_off \
+        cargo run --release --example saaq_latent_calibration
+    @echo ">>> phase 2/3: csv, heartbeat off, repeat=2"
+    LINEUP_CONFIG="${LINEUP_CONFIG:-configs/saaq15_moe_lineup.toml}" \
+        SAAQ_RULE=saaq_v1_5 REPEAT_COUNT=2 TELEMETRY_SOURCE=csv \
+        HEARTBEAT_MATRIX=off RUN_TAG=campaign_csv_off \
+        cargo run --release --example saaq_latent_calibration
+    @echo ">>> phase 3/3: csv, heartbeat on, repeat=2"
+    LINEUP_CONFIG="${LINEUP_CONFIG:-configs/saaq15_moe_lineup.toml}" \
+        SAAQ_RULE=saaq_v1_5 REPEAT_COUNT=2 TELEMETRY_SOURCE=csv \
+        HEARTBEAT_MATRIX=on  RUN_TAG=campaign_csv_on \
+        cargo run --release --example saaq_latent_calibration
+    @echo "ok: campaign finished; see artifacts/index.csv"
 
 # Force CSV-replay mode for the SAAQ sweep. TELEMETRY_CSV_PATH must be set
 # in the environment or passed explicitly:
