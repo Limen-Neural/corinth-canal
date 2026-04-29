@@ -9,7 +9,7 @@ mod adapter;
 mod checkpoint;
 mod routing;
 
-use self::adapter::{resolve_adapter, ModelAdapter};
+use self::adapter::{resolve_adapter, ModelAdapter, SynapseSource};
 use self::checkpoint::{
     extract_named_token_embedding_from_checkpoint, probe_and_map_checkpoint, MappedGgufCheckpoint,
 };
@@ -55,8 +55,8 @@ pub struct GpuSynapseTensorDescriptor {
     pub ggml_type_label: &'static str,
     pub dims: Vec<usize>,
     /// `true` iff the runtime currently has a code path that can consume
-    /// this `ggml_type` as GPU synapse weights. Today only `F16` qualifies
-    /// (see `OlmoeRouter::registered_gpu_synapse_weights`); every other
+    /// this `ggml_type` as GPU synapse weights. `F16` uses the registered
+    /// direct-load path; `Q8_0` uses the dequantized F32 path. Every other
     /// type falls back to synthetic synapses.
     pub has_dequant_path: bool,
 }
@@ -102,12 +102,11 @@ pub fn ggml_type_label(ggml_type: u32) -> &'static str {
 }
 
 /// Returns `true` iff the runtime can consume `ggml_type` as the source
-/// for the GPU synapse tensor today. Mirrors the F16-only contract of
-/// `OlmoeRouter::registered_gpu_synapse_weights` /
-/// `MappedGgufCheckpoint::registered_f16_tensor`. Every other type falls
-/// back to synthetic synapses.
+/// for the GPU synapse tensor today. `F16` uses the registered direct-load
+/// path; `Q8_0` uses the dequantized F32 path. Every other type falls back
+/// to synthetic synapses.
 pub fn synapse_dequant_path_supported(ggml_type: u32) -> bool {
-    ggml_type == GGML_TYPE_F16
+    ggml_type == GGML_TYPE_F16 || ggml_type == GGML_TYPE_Q8_0
 }
 
 impl RouterMetadata {
@@ -325,6 +324,35 @@ impl OlmoeRouter {
                 reason: "checkpoint not loaded".into(),
             })?;
         checkpoint.registered_f16_tensor(tensor_name, &self.model_path)
+    }
+
+    /// Returns the tensor name to use for Q8_0 dequantized synapse loading,
+    /// or `None` if the checkpoint does not have a compatible Q8_0 synapse
+    /// tensor (e.g. the adapter chose F16 or synthetic fallback instead).
+    pub fn dequantized_q8_0_synapse_tensor_name(&self) -> Option<&str> {
+        self.adapter.as_ref().and_then(|a| {
+            if a.synapse_source == SynapseSource::DequantizedQ8_0 {
+                a.dequant_q8_0_synapse_tensor.as_deref()
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Dequantize the named Q8_0 tensor to a flat `Vec<f32>` that can be
+    /// passed to [`GpuAccelerator::load_synapse_weights_named`].
+    pub(crate) fn dequantized_q8_0_synapse_weights(
+        &self,
+        tensor_name: &str,
+    ) -> Result<Vec<f32>> {
+        let checkpoint = self
+            .checkpoint
+            .as_ref()
+            .ok_or_else(|| HybridError::ModelLoad {
+                path: self.model_path.clone(),
+                reason: "checkpoint not loaded".into(),
+            })?;
+        checkpoint.dequantize_q8_0_tensor(tensor_name, &self.model_path)
     }
 
     fn probe_and_map(
@@ -662,6 +690,58 @@ mod tests {
         )
     }
 
+    /// Build a minimal valid Q8_0 payload for a tensor of `width * n_rows`
+    /// elements.  Each block uses `scale_bits` as the raw F16 scale and
+    /// `quant_val` for every quantized byte.
+    fn build_q8_0_payload(width: usize, n_rows: usize, scale_bits: u16, quant_val: i8) -> Vec<u8> {
+        assert!(width % 32 == 0, "Q8_0 width must be divisible by 32");
+        let blocks_per_row = width / 32;
+        let row_bytes = blocks_per_row * 34;
+        let mut out = vec![0u8; row_bytes * n_rows];
+        for row in 0..n_rows {
+            let row_start = row * row_bytes;
+            for blk in 0..blocks_per_row {
+                let blk_start = row_start + blk * 34;
+                let [lo, hi] = scale_bits.to_le_bytes();
+                out[blk_start] = lo;
+                out[blk_start + 1] = hi;
+                for q in 0..32 {
+                    out[blk_start + 2 + q] = quant_val as u8;
+                }
+            }
+        }
+        out
+    }
+
+    fn build_q8_0_synapse_checkpoint(gate_payload: Vec<u8>) -> Vec<u8> {
+        // Q8_0 payload: scale = 1.0 (f16 bits = 0x3c00), quant = 1
+        let attn_q_payload =
+            build_q8_0_payload(EMBEDDING_DIM, EMBEDDING_DIM, 0x3c00, 1);
+        build_test_gguf(
+            vec![
+                (
+                    "blk.0.ffn_gate_inp.weight",
+                    vec![EMBEDDING_DIM, 64],
+                    GGML_TYPE_F32,
+                    gate_payload,
+                ),
+                (
+                    "blk.0.attn_q.weight",
+                    vec![EMBEDDING_DIM, EMBEDDING_DIM],
+                    GGML_TYPE_Q8_0,
+                    attn_q_payload,
+                ),
+                (
+                    "token_embd.weight",
+                    vec![EMBEDDING_DIM, 32],
+                    GGML_TYPE_F16,
+                    vec![0u8; EMBEDDING_DIM * 32 * 2],
+                ),
+            ],
+            32,
+        )
+    }
+
     fn stub() -> OlmoeRouter {
         OlmoeRouter::load_with_mode("", 8, 1, RoutingMode::StubUniform)
             .expect("stub load should succeed")
@@ -819,6 +899,83 @@ mod tests {
     }
 
     #[test]
+    fn test_preferred_synapse_descriptor_q8_0_has_dequant_path() {
+        let gate_payload = vec![0u8; EMBEDDING_DIM * 64 * size_of::<f32>()];
+        let path = write_temp_file(
+            &build_q8_0_synapse_checkpoint(gate_payload),
+            "q8-0-descriptor",
+        );
+
+        let model =
+            OlmoeRouter::load_with_mode(path.to_str().unwrap(), 0, 0, RoutingMode::StubUniform)
+                .unwrap();
+        let descriptor = model
+            .preferred_gpu_synapse_tensor_descriptor()
+            .expect("preferred descriptor must be exposed for Q8_0 attn_q");
+
+        assert_eq!(descriptor.name, "blk.0.attn_q.weight");
+        assert_eq!(descriptor.ggml_type_id, GGML_TYPE_Q8_0);
+        assert_eq!(descriptor.ggml_type_label, "Q8_0");
+        assert_eq!(descriptor.dims, vec![EMBEDDING_DIM, EMBEDDING_DIM]);
+        assert!(descriptor.has_dequant_path);
+        assert_eq!(model.real_gpu_synapse_tensor_name(), None);
+        assert_eq!(
+            model.dequantized_q8_0_synapse_tensor_name(),
+            Some("blk.0.attn_q.weight")
+        );
+        assert_eq!(model.synapse_source(), "dequantized-q8_0");
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_q8_0_synapse_probe_uses_dequantized_source() {
+        let gate_payload = vec![0u8; EMBEDDING_DIM * 64 * size_of::<f32>()];
+        let path = write_temp_file(
+            &build_q8_0_synapse_checkpoint(gate_payload),
+            "q8-0-probe",
+        );
+
+        let metadata = OlmoeRouter::probe_model(path.to_str().unwrap(), None).unwrap();
+        assert_eq!(
+            metadata.preferred_gpu_synapse_tensor_name.as_deref(),
+            Some("blk.0.attn_q.weight")
+        );
+        assert_eq!(metadata.real_gpu_synapse_tensor_name, None);
+        assert_eq!(metadata.synapse_source, "dequantized-q8_0");
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_q8_0_dequantize_full_tensor_values() {
+        let gate_payload = vec![0u8; EMBEDDING_DIM * 64 * size_of::<f32>()];
+        let path = write_temp_file(
+            &build_q8_0_synapse_checkpoint(gate_payload),
+            "q8-0-dequant",
+        );
+
+        let model =
+            OlmoeRouter::load_with_mode(path.to_str().unwrap(), 0, 0, RoutingMode::StubUniform)
+                .unwrap();
+
+        let weights = model
+            .dequantized_q8_0_synapse_weights("blk.0.attn_q.weight")
+            .expect("Q8_0 dequantization must succeed");
+
+        // scale = 1.0, quant = 1 → each element should be 1.0 * 1 = 1.0
+        assert_eq!(weights.len(), EMBEDDING_DIM * EMBEDDING_DIM);
+        for &v in &weights {
+            assert!(
+                (v - 1.0f32).abs() < 1e-6,
+                "expected 1.0, got {v}"
+            );
+        }
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn test_ggml_type_label_covers_lineup_quants() {
         // Sanity: the labels we surface in synapse_diagnostic.json should
         // never read "unknown" for the SAAQ 1.5 lineup's known quant types.
@@ -836,7 +993,8 @@ mod tests {
         }
         assert_eq!(ggml_type_label(9999), "unknown");
         assert!(synapse_dequant_path_supported(GGML_TYPE_F16));
-        for &ty in &[0u32, 8, 12, 13, 14, 20, 21] {
+        assert!(synapse_dequant_path_supported(GGML_TYPE_Q8_0));
+        for &ty in &[0u32, 12, 13, 14, 20, 21] {
             assert!(!synapse_dequant_path_supported(ty), "ggml_type={ty}");
         }
     }

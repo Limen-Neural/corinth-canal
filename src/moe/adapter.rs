@@ -1,13 +1,14 @@
 //! Model-family adapter resolution for the GGUF router host.
 
 use super::checkpoint::{GgufMetadata, MappedGgufCheckpoint};
-use super::{GGML_TYPE_F16, GGML_TYPE_F32};
+use super::{GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_Q8_0};
 use crate::error::{HybridError, Result};
 use crate::types::ModelFamily;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SynapseSource {
     Real,
+    DequantizedQ8_0,
     SyntheticFallback,
 }
 
@@ -23,6 +24,7 @@ pub(super) struct ModelAdapter {
     pub(super) routing_tensor: String,
     pub(super) preferred_gpu_synapse_tensor: Option<String>,
     pub(super) real_gpu_synapse_tensor: Option<String>,
+    pub(super) dequant_q8_0_synapse_tensor: Option<String>,
     pub(super) synapse_source: SynapseSource,
     pub(super) quantization: String,
 }
@@ -31,6 +33,7 @@ impl ModelAdapter {
     pub(super) fn synapse_source_label(&self) -> &'static str {
         match self.synapse_source {
             SynapseSource::Real => "real",
+            SynapseSource::DequantizedQ8_0 => "dequantized-q8_0",
             SynapseSource::SyntheticFallback => "synthetic-fallback",
         }
     }
@@ -109,6 +112,25 @@ pub(super) fn resolve_adapter(
         (info.ggml_type == GGML_TYPE_F16 && info.dims == [hidden_size, hidden_size])
             .then(|| name.clone())
     });
+    let dequant_q8_0_synapse_tensor = if real_gpu_synapse_tensor.is_none() {
+        preferred_gpu_synapse_tensor.as_ref().and_then(|name| {
+            let info = checkpoint.tensor_info(name, path).ok()?;
+            (info.ggml_type == GGML_TYPE_Q8_0
+                && info.dims.len() == 2
+                && info.dims[0] % 32 == 0)
+                .then(|| name.clone())
+        })
+    } else {
+        None
+    };
+
+    let synapse_source = if real_gpu_synapse_tensor.is_some() {
+        SynapseSource::Real
+    } else if dequant_q8_0_synapse_tensor.is_some() {
+        SynapseSource::DequantizedQ8_0
+    } else {
+        SynapseSource::SyntheticFallback
+    };
 
     Ok(ModelAdapter {
         family,
@@ -120,12 +142,9 @@ pub(super) fn resolve_adapter(
         token_embedding_tensor,
         routing_tensor,
         preferred_gpu_synapse_tensor,
-        synapse_source: if real_gpu_synapse_tensor.is_some() {
-            SynapseSource::Real
-        } else {
-            SynapseSource::SyntheticFallback
-        },
+        synapse_source,
         real_gpu_synapse_tensor,
+        dequant_q8_0_synapse_tensor,
         quantization: metadata.quantization().to_owned(),
     })
 }
