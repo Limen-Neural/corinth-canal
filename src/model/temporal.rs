@@ -131,6 +131,10 @@ impl Model {
             .dequantized_q8_0_synapse_tensor_name()
             .map(str::to_owned)
         {
+            let fallback_signature = format!("synthetic-f32::{neuron_count}");
+            if accelerator.synapse_signature() == Some(fallback_signature.as_str()) {
+                return Ok(());
+            }
             let signature =
                 format!("dequantized-q8_0::{}::{tensor_name}", self.router.model_path());
             if accelerator.synapse_signature() != Some(signature.as_str()) {
@@ -163,6 +167,10 @@ impl Model {
             .dequantized_q5_k_synapse_tensor_name()
             .map(str::to_owned)
         {
+            let fallback_signature = format!("synthetic-f32::{neuron_count}");
+            if accelerator.synapse_signature() == Some(fallback_signature.as_str()) {
+                return Ok(());
+            }
             let signature =
                 format!("dequantized-q5_k::{}::{tensor_name}", self.router.model_path());
             if accelerator.synapse_signature() != Some(signature.as_str()) {
