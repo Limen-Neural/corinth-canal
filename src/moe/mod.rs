@@ -361,7 +361,7 @@ impl OlmoeRouter {
     /// tensor (e.g. the adapter chose F16, Q8_0, or synthetic fallback instead).
     pub fn dequantized_q5_k_synapse_tensor_name(&self) -> Option<&str> {
         self.adapter.as_ref().and_then(|a| {
-            if a.synapse_source == SynapseSource::DequantizedQ5_K {
+            if a.synapse_source == SynapseSource::DequantizedQ5K {
                 a.dequant_q5_k_synapse_tensor.as_deref()
             } else {
                 None
@@ -805,7 +805,7 @@ mod tests {
                 // We want sc=1, m=0 for all chunks to get output = 1.0 * 1 - 0.0 = 1.0
                 // scale_min_k4 encoding: lower 6 bits for scale, upper 2 bits contribute to min
                 for i in 0..12 {
-                    out[blk_start + 4 + i] = if i < 6 { 1 } else { 0 };
+                    out[blk_start + 4 + i] = 0x01;
                 }
 
                 // qh: high 2 bits for each quant value (all zeros for values 0-15)
@@ -1124,7 +1124,27 @@ mod tests {
         // Verify we get the expected number of elements
         assert_eq!(weights.len(), EMBEDDING_DIM * EMBEDDING_DIM);
 
-        // Verify all values are finite (dequant produced valid floats)
+         // Verify a few deterministic sample values from the synthetic
+         // checkpoint payload so this test catches dequantization bugs such as
+         // incorrect scale/min handling or nibble interpretation.
+         let expected_samples = [
+             (0usize, 0.0f32),
+             (1usize, 1.0f32),
+             (2usize, 2.0f32),
+             (3usize, 3.0f32),
+             (32usize, 0.0f32),
+             (33usize, 1.0f32),
+         ];
+         for (idx, expected) in expected_samples {
+             let actual = weights[idx];
+             assert!(
+                 (actual - expected).abs() <= 1e-6,
+                 "unexpected dequantized value at index {idx}: expected {expected}, got {actual}"
+             );
+         }
+         /*
+        Also keep the broad sanity check that every produced value is finite.
+        */
         for &v in &weights {
             assert!(v.is_finite(), "expected finite value, got {v}");
         }
