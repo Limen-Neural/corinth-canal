@@ -3,14 +3,11 @@ name: CI (CPU)
   pull_request:
     branches:
       - '**'
-  push:
-    branches:
-      - '**'
   schedule:
     - cron: '0 0 * * *'  # Run daily at midnight
 
 concurrency:
-  group: ci-cpu-${{github.workflow}}-${{github.ref }}
+  group: ci-cpu-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -25,11 +22,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-          components: rustfmt, clippy
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Install components (rustfmt, clippy)
+        run: rustup component add rustfmt clippy
 
       - name: Cache Cargo + target
         uses: Swatinem/rust-cache@v2
@@ -58,6 +55,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-action@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --all-targets --no-default-features --locked
+      - run: |
+          rustup component add rustfmt clippy
+          cargo test --all-targets --no-default-features --locked
