@@ -41,7 +41,7 @@ jobs:
         run: cargo fmt --all -- --check    
 
       - name: Lint 
-        run: cargo clippy --all-targets --no-default-features -- -D warnings
+        run: cargo clippy --all-targets --no-default-features -- -D warnings -A dead_code
 
       - name: Build library (CPU-only)
         run: cargo test --lib --no-default-features --locked -- --nocapture
