@@ -1,7 +1,7 @@
 //! Model-family adapter resolution for the GGUF router host.
 
 use super::checkpoint::{GgufMetadata, MappedGgufCheckpoint};
-use super::{GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_Q8_0};
+use super::{GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_Q5_K, GGML_TYPE_Q8_0};
 use crate::error::{HybridError, Result};
 use crate::types::ModelFamily;
 
@@ -9,6 +9,7 @@ use crate::types::ModelFamily;
 pub(super) enum SynapseSource {
     Real,
     DequantizedQ8_0,
+    DequantizedQ5K,
     SyntheticFallback,
 }
 
@@ -25,6 +26,7 @@ pub(super) struct ModelAdapter {
     pub(super) preferred_gpu_synapse_tensor: Option<String>,
     pub(super) real_gpu_synapse_tensor: Option<String>,
     pub(super) dequant_q8_0_synapse_tensor: Option<String>,
+    pub(super) dequant_q5_k_synapse_tensor: Option<String>,
     pub(super) synapse_source: SynapseSource,
     pub(super) quantization: String,
 }
@@ -34,6 +36,7 @@ impl ModelAdapter {
         match self.synapse_source {
             SynapseSource::Real => "real",
             SynapseSource::DequantizedQ8_0 => "dequantized-q8_0",
+            SynapseSource::DequantizedQ5K => "dequantized-q5_k",
             SynapseSource::SyntheticFallback => "synthetic-fallback",
         }
     }
@@ -124,10 +127,26 @@ pub(super) fn resolve_adapter(
         None
     };
 
+    let dequant_q5_k_synapse_tensor = if real_gpu_synapse_tensor.is_none()
+        && dequant_q8_0_synapse_tensor.is_none()
+    {
+        preferred_gpu_synapse_tensor.as_ref().and_then(|name| {
+            let info = checkpoint.tensor_info(name, path).ok()?;
+            (info.ggml_type == GGML_TYPE_Q5_K
+                && info.dims.len() == 2
+                && info.dims[0] % 256 == 0)
+                .then(|| name.clone())
+        })
+    } else {
+        None
+    };
+
     let synapse_source = if real_gpu_synapse_tensor.is_some() {
         SynapseSource::Real
     } else if dequant_q8_0_synapse_tensor.is_some() {
         SynapseSource::DequantizedQ8_0
+    } else if dequant_q5_k_synapse_tensor.is_some() {
+        SynapseSource::DequantizedQ5K
     } else {
         SynapseSource::SyntheticFallback
     };
@@ -145,6 +164,7 @@ pub(super) fn resolve_adapter(
         synapse_source,
         real_gpu_synapse_tensor,
         dequant_q8_0_synapse_tensor,
+        dequant_q5_k_synapse_tensor,
         quantization: metadata.quantization().to_owned(),
     })
 }
@@ -167,13 +187,12 @@ fn infer_family(
         }
     };
 
-    if let Some(expected) = family_override {
-        if expected != inferred {
-            return Err(HybridError::InvalidConfig(format!(
-                "model_family override {:?} does not match GGUF architecture '{architecture}'",
-                expected
-            )));
-        }
+    if let Some(expected) = family_override
+        && expected != inferred {
+        return Err(HybridError::InvalidConfig(format!(
+            "model_family override {:?} does not match GGUF architecture '{architecture}'",
+            expected
+        )));
     }
 
     Ok(inferred)

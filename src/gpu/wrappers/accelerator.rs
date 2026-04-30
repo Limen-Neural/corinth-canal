@@ -765,7 +765,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // requires GPU + driver ≥ 570
+    #[cfg_attr(not(feature = "cuda"), ignore)] // requires GPU + driver ≥ 570
     fn test_saaq_two_pass_reduction_selects_global_best_and_tie_breaks() {
         if !GpuContext::is_available() {
             return;
