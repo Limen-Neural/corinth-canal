@@ -11,7 +11,9 @@ RUN apt-get update && apt-get install -y \
     llvm \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${RUST_VERSION}
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh && \
+    sh /tmp/rustup.sh -y --default-toolchain ${RUST_VERSION} && \
+    rm /tmp/rustup.sh
 ENV PATH=/root/.cargo/bin:$PATH
 
 WORKDIR /app
