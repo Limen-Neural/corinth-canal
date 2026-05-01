@@ -1,5 +1,5 @@
 name: GPU Tests (CUDA 13.0 + sm_120)
-'on':
+on:
   pull_request:
     branches:
       - '**'

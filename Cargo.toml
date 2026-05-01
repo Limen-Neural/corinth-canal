@@ -31,10 +31,9 @@ cc = "1.0"
 default = ["cuda"]
 gguf = []
 cuda = ["cust"]
-# Allows building without CUDA Toolkit by creating empty fatbin files. The cuda
-# dependency is still present (CPU runtime required), but GPU execution fails at
-# runtime. CPU fallbacks remain available.
-gpu-stub = ["cuda"]
+# Allows building without CUDA Toolkit by creating empty fatbin files.
+# Does NOT depend on cuda feature to enable CPU-only builds.
+gpu-stub = []
 # CI-friendly profile: no cuda dependencies, minimal build for testing CI pipeline.
 ci = []
 [[example]]
