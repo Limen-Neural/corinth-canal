@@ -1,9 +1,11 @@
 #![allow(dead_code)]
 
+use std::borrow::Cow;
 use std::process::Command;
 use std::sync::Once;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use sentry::ClientInitGuard;
 use tracing_subscriber::EnvFilter;
 
 static INIT: Once = Once::new();
@@ -19,6 +21,63 @@ pub fn init_tracing() {
             builder.init();
         }
     });
+}
+
+pub fn init_sentry(command: &'static str) -> Option<ClientInitGuard> {
+    let dsn = std::env::var("SENTRY_DSN")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())?;
+    let git_sha = git_sha();
+    let release = resolve_sentry_release(&git_sha);
+    let environment = std::env::var("SENTRY_ENVIRONMENT")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "local".to_owned());
+    let parsed_dsn = match dsn.parse() {
+        Ok(dsn) => dsn,
+        Err(error) => {
+            eprintln!("Sentry disabled: invalid SENTRY_DSN ({error})");
+            return None;
+        }
+    };
+
+    let guard = sentry::init(sentry::ClientOptions {
+        dsn: Some(parsed_dsn),
+        release: Some(Cow::Owned(release)),
+        environment: Some(Cow::Owned(environment)),
+        sample_rate: 1.0,
+        traces_sample_rate: 0.0,
+        default_integrations: true,
+        ..Default::default()
+    });
+
+    sentry::configure_scope(|scope| {
+        scope.set_tag("repo", "corinth-canal");
+        scope.set_tag("command", command);
+        scope.set_tag("git_sha", git_sha.clone());
+    });
+
+    Some(guard)
+}
+
+pub fn capture_top_level_error(command: &'static str, error: &(dyn std::error::Error + 'static)) {
+    if sentry::Hub::with_active(|hub| hub.client().is_none()) {
+        return;
+    }
+
+    let git_sha = git_sha();
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("repo", "corinth-canal");
+            scope.set_tag("command", command);
+            scope.set_tag("git_sha", git_sha);
+        },
+        || {
+            sentry::capture_error(error);
+        },
+    );
 }
 
 pub fn run_id() -> String {
@@ -65,6 +124,25 @@ pub fn git_sha() -> String {
         }
     }
     "unknown".to_owned()
+}
+
+fn resolve_sentry_release(git_sha: &str) -> String {
+    if let Some(release) = std::env::var("SENTRY_RELEASE")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+    {
+        return release;
+    }
+
+    if let Some(release) = sentry::release_name!() {
+        let release = release.into_owned();
+        if !release.trim().is_empty() {
+            return release;
+        }
+    }
+
+    format!("corinth-canal@{git_sha}")
 }
 
 pub fn error_category(status: Option<&str>, error: Option<&str>) -> &'static str {

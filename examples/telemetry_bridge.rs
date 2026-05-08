@@ -3,10 +3,19 @@
 mod support;
 
 use corinth_canal::{EMBEDDING_DIM, model::Model, moe::RoutingMode, telemetry::TelemetrySnapshot};
-use support::{config::RunConfig, default_spiking_model_config};
+use support::{config::RunConfig, default_spiking_model_config, observability};
 
 fn main() -> corinth_canal::Result<()> {
     let _ = dotenvy::from_filename(".env.local");
+    let _sentry_guard = observability::init_sentry("telemetry_bridge");
+    let result = run();
+    if let Err(error) = result.as_ref() {
+        observability::capture_top_level_error("telemetry_bridge", error);
+    }
+    result
+}
+
+fn run() -> corinth_canal::Result<()> {
     let run_cfg = RunConfig::from_env();
     let routing_mode = run_cfg
         .routing_mode_override

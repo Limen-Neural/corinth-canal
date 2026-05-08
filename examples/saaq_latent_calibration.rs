@@ -178,6 +178,7 @@ struct RunContext<'a> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenvy::from_filename(".env.local");
+    let _sentry_guard = observability::init_sentry("saaq_latent_calibration");
     observability::init_tracing();
     let command_run_id = observability::run_id();
     let git_sha = observability::git_sha();
@@ -205,6 +206,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         error_category = observability::error_category(None, error.as_deref()),
         "command_finish"
     );
+
+    if let Err(error) = result.as_ref() {
+        observability::capture_top_level_error("saaq_latent_calibration", error.as_ref());
+    }
 
     result
 }

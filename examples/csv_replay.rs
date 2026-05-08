@@ -6,6 +6,7 @@ mod support;
 
 use support::config::RunConfig;
 use support::default_spiking_model_config;
+use support::observability;
 
 use corinth_canal::{
     EMBEDDING_DIM, FUNNEL_HIDDEN_NEURONS, HybridError, TelemetryFunnel, model::Model,
@@ -42,14 +43,23 @@ fn mean_squared_error(output: &[f32], target: &[f32]) -> f32 {
 }
 
 fn main() -> corinth_canal::Result<()> {
+    let _ = dotenvy::from_filename(".env.local");
+    let _sentry_guard = observability::init_sentry("csv_replay");
+    let result = run();
+    if let Err(error) = result.as_ref() {
+        observability::capture_top_level_error("csv_replay", error);
+    }
+    result
+}
+
+fn run() -> corinth_canal::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: cargo run --example csv_replay <telemetry.csv>");
-        eprintln!("  CSV format: {}", EXPECTED_HEADER);
-        std::process::exit(1);
+        return Err(HybridError::InvalidConfig(format!(
+            "missing telemetry CSV path. Usage: cargo run --example csv_replay <telemetry.csv>; CSV format: {EXPECTED_HEADER}"
+        )));
     }
 
-    let _ = dotenvy::from_filename(".env.local");
     let run_cfg = RunConfig::from_env();
 
     let csv_path = &args[1];
