@@ -83,3 +83,19 @@ surface is the contract to preserve.
 
 This means the manifest is always truthful about what actually fed the run,
 even when the configured source silently degraded.
+# Observability
+
+The example binaries use a shared observability wrapper in
+`examples/support/observability.rs`.
+
+- `command_start` and `command_finish` are emitted for every example binary.
+- Tracing fields are stable across examples:
+  `repo`, `command`, `run_id`, `git_sha`, `latency_ms`, `success`,
+  `error_category`.
+- Sentry is opt-in only. If `SENTRY_DSN` is unset or blank, the wrappers do
+  not initialize a client and do not introduce a network dependency.
+- Only safe diagnostics are attached to Sentry scope:
+  `repo`, `command`, `git_sha`, `model_slug`, `telemetry_source`,
+  `heartbeat_enabled`, `validation_status`, and `error_category`.
+- Absolute checkpoint paths, DSNs, and generated artifact paths are not added
+  to Sentry tags or extras by the wrappers.

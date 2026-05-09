@@ -2,6 +2,8 @@
 #
 # Copy this file locally or point LINEUP_CONFIG at it after replacing each
 # `path` with the real absolute GGUF checkpoint path on your machine.
+# Do not commit your machine-specific replacements; keep local overrides in an
+# untracked copy or in `.env.local` via LINEUP_CONFIG.
 
 [[model]]
 slug = "olmoe_baseline"

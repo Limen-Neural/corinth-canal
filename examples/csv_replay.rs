@@ -6,7 +6,7 @@ mod support;
 
 use support::config::RunConfig;
 use support::default_spiking_model_config;
-use support::observability;
+use support::observability::{self, CommandObserver, SafeDiagnosticData};
 
 use corinth_canal::{
     EMBEDDING_DIM, FUNNEL_HIDDEN_NEURONS, HybridError, TelemetryFunnel, model::Model,
@@ -45,14 +45,13 @@ fn mean_squared_error(output: &[f32], target: &[f32]) -> f32 {
 fn main() -> corinth_canal::Result<()> {
     let _ = dotenvy::from_filename(".env.local");
     let _sentry_guard = observability::init_sentry("csv_replay");
-    let result = run();
-    if let Err(error) = result.as_ref() {
-        observability::capture_top_level_error("csv_replay", error);
-    }
+    let observer = observability::start_command("csv_replay");
+    let result = run(&observer);
+    observer.finish(&result, SafeDiagnosticData::default());
     result
 }
 
-fn run() -> corinth_canal::Result<()> {
+fn run(observer: &CommandObserver) -> corinth_canal::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         return Err(HybridError::InvalidConfig(format!(
@@ -61,6 +60,15 @@ fn run() -> corinth_canal::Result<()> {
     }
 
     let run_cfg = RunConfig::from_env();
+    let mut safe = SafeDiagnosticData::default()
+        .with_telemetry_source("csv")
+        .with_heartbeat_enabled(false);
+    if let Some(model_slug) = observability::checkpoint_slug(&run_cfg.gguf_checkpoint_path) {
+        safe = safe.with_model_slug(&model_slug);
+        observer.annotate(safe);
+    } else {
+        observer.annotate(safe);
+    }
 
     let csv_path = &args[1];
     let cfg = default_spiking_model_config(run_cfg.gguf_checkpoint_path.clone(), 20);

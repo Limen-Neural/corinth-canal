@@ -12,8 +12,9 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use support::{
     ResolvedTelemetry, RunConfig, TelemetrySource, ValidationModelSpec,
-    default_spiking_model_config, heartbeat_gain, observability, prompt_embedding_for_validation,
-    telemetry_snapshot_for_tick,
+    default_spiking_model_config, heartbeat_gain,
+    observability::{self, CommandObserver, SafeDiagnosticData},
+    prompt_embedding_for_validation, telemetry_snapshot_for_tick,
 };
 
 #[derive(Debug, Serialize)]
@@ -140,6 +141,18 @@ fn emit_validation_finish(
     status: &'static str,
     error: Option<&str>,
 ) {
+    let category = observability::error_category(Some(status), error);
+    observability::annotate_scope(
+        "saaq_latent_calibration",
+        &ctx.run_id,
+        &observability::git_sha(),
+        SafeDiagnosticData::default()
+            .with_model_slug(&ctx.spec.slug)
+            .with_telemetry_source(&ctx.resolved.source_label)
+            .with_heartbeat_enabled(ctx.heartbeat_enabled)
+            .with_validation_status(status)
+            .with_error_category(category),
+    );
     tracing::info!(
         event = "validation_finish",
         repo = "corinth-canal",
@@ -153,7 +166,7 @@ fn emit_validation_finish(
         ticks = ctx.ticks,
         latency_ms = started.elapsed().as_millis() as u64,
         success = status == "completed",
-        error_category = observability::error_category(Some(status), error),
+        error_category = category,
         "validation_finish"
     );
 }
@@ -179,43 +192,16 @@ struct RunContext<'a> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenvy::from_filename(".env.local");
     let _sentry_guard = observability::init_sentry("saaq_latent_calibration");
-    observability::init_tracing();
-    let command_run_id = observability::run_id();
-    let git_sha = observability::git_sha();
-    let started = Instant::now();
-
-    tracing::info!(
-        event = "command_start",
-        repo = "corinth-canal",
-        command = "saaq_latent_calibration",
-        run_id = %command_run_id,
-        git_sha = %git_sha,
-        "command_start"
-    );
-
-    let result = run_main();
-    let error = result.as_ref().err().map(|error| error.to_string());
-    tracing::info!(
-        event = "command_finish",
-        repo = "corinth-canal",
-        command = "saaq_latent_calibration",
-        run_id = %command_run_id,
-        git_sha = %git_sha,
-        latency_ms = started.elapsed().as_millis() as u64,
-        success = result.is_ok(),
-        error_category = observability::error_category(None, error.as_deref()),
-        "command_finish"
-    );
-
-    if let Err(error) = result.as_ref() {
-        observability::capture_top_level_error("saaq_latent_calibration", error.as_ref());
-    }
-
+    let observer = observability::start_command("saaq_latent_calibration");
+    let result = run_main(&observer);
+    observer.finish(&result, SafeDiagnosticData::default());
     result
 }
 
-fn run_main() -> Result<(), Box<dyn std::error::Error>> {
+fn run_main(observer: &CommandObserver) -> Result<(), Box<dyn std::error::Error>> {
     let cfg = RunConfig::from_env();
+    observer
+        .annotate(SafeDiagnosticData::default().with_telemetry_source(&cfg.telemetry.source_label));
 
     // Effective tick count: when TICKS=0 and CSV replay is live, use the full
     // CSV length so SR.jl corpus runs cover exactly one loop with zero

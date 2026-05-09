@@ -32,6 +32,25 @@ The following models are used in the SAAQ 1.5 baseline campaign:
 - `docs/MODULE_STATUS.md` — live status table; machine-readable mirror in `manifests/proven_components.toml`.
 - `manifests/known_good_runs.md` — append-only log of blessed run IDs.
 
+## Observability
+
+The example binaries ship with a shared observability wrapper for command-level
+telemetry and failure triage. This layer is intentionally optional:
+
+- If `SENTRY_DSN` is unset or blank, examples stay fully local/offline.
+- No Sentry client is initialized in `src/lib.rs`, so downstream library
+  consumers do not inherit global error-reporting behavior.
+- Every example emits `command_start` and `command_finish` tracing events with
+  `repo`, `command`, `run_id`, `git_sha`, `latency_ms`, `success`, and
+  `error_category`.
+- Sentry, when enabled, only receives safe diagnostic tags such as `repo`,
+  `command`, `git_sha`, `model_slug`, `telemetry_source`,
+  `heartbeat_enabled`, `validation_status`, and `error_category`.
+
+The wrappers do not attach absolute checkpoint paths to Sentry scope or
+breadcrumbs. Machine-local config examples belong in `.env.local` or in
+uncommitted copies of the lineup templates under `configs/`.
+
 ## Module Map
 
 - `src/model/*`: end-to-end runtime orchestration, GPU temporal logic, and routing telemetry helpers

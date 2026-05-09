@@ -19,7 +19,10 @@ use serde::Serialize;
 use corinth_canal::ModelFamily;
 use corinth_canal::moe::{GpuSynapseTensorDescriptor, OlmoeRouter, RoutingMode};
 use support::config::RunConfig;
-use support::{ValidationModelSpec, observability};
+use support::{
+    ValidationModelSpec,
+    observability::{self, CommandObserver, SafeDiagnosticData},
+};
 
 #[derive(Debug, Serialize)]
 struct SynapseDiagnosticRow {
@@ -149,15 +152,15 @@ fn print_row(row: &SynapseDiagnosticRow) {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenvy::from_filename(".env.local");
     let _sentry_guard = observability::init_sentry("synapse_diagnostic");
-    let result = run();
-    if let Err(error) = result.as_ref() {
-        observability::capture_top_level_error("synapse_diagnostic", error.as_ref());
-    }
+    let observer = observability::start_command("synapse_diagnostic");
+    let result = run(&observer);
+    observer.finish(&result, SafeDiagnosticData::default());
     result
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
+fn run(observer: &CommandObserver) -> Result<(), Box<dyn std::error::Error>> {
     let cfg = RunConfig::from_env();
+    observer.annotate(SafeDiagnosticData::default().with_validation_status("probing"));
 
     fs::create_dir_all(&cfg.output_root)?;
 
