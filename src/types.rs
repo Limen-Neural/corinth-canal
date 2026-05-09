@@ -1,4 +1,7 @@
+//! Sentry integration for 'corinth-canal'.
+
 //! Public data types for `corinth-canal`.
+//!
 
 use std::path::PathBuf;
 
