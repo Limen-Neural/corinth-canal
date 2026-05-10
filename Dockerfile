@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
     cmake \
     clang \
     llvm \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 ENV CUDAHOSTCXX=${CUDAHOSTCXX}
 
