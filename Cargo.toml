@@ -24,7 +24,6 @@ sentry = { version = "0.48.1", default-features = false, features = ["backtrace"
 dotenvy = "0.15"
 toml    = "0.8"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
-sentry = "0.48.1"
 
 [build-dependencies]
 cc = "1.0"
