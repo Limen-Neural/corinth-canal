@@ -136,16 +136,14 @@ fn heartbeat_slug_for(enabled: bool) -> &'static str {
 }
 
 fn emit_validation_finish(
+    observer: &CommandObserver,
     ctx: &RunContext<'_>,
     started: Instant,
     status: &'static str,
     error: Option<&str>,
 ) {
     let category = observability::error_category(Some(status), error);
-    observability::annotate_scope(
-        "saaq_latent_calibration",
-        &ctx.run_id,
-        &observability::git_sha(),
+    observer.annotate(
         SafeDiagnosticData::default()
             .with_model_slug(&ctx.spec.slug)
             .with_telemetry_source(&ctx.resolved.source_label)
@@ -266,7 +264,7 @@ fn run_main(observer: &CommandObserver) -> Result<(), Box<dyn std::error::Error>
                             saaq_rule: cfg.saaq_rule,
                             run_tag: run_tag_ref,
                         };
-                        run_validation(&ctx, pending)?;
+                        run_validation(observer, &ctx, pending)?;
                     }
                 }
             }
@@ -298,10 +296,17 @@ fn run_main(observer: &CommandObserver) -> Result<(), Box<dyn std::error::Error>
 }
 
 fn run_validation(
+    observer: &CommandObserver,
     ctx: &RunContext<'_>,
     pending: &mut Vec<PendingIndexRow>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let validation_started = Instant::now();
+    observer.annotate(
+        SafeDiagnosticData::default()
+            .with_model_slug(&ctx.spec.slug)
+            .with_telemetry_source(&ctx.resolved.source_label)
+            .with_heartbeat_enabled(ctx.heartbeat_enabled),
+    );
     tracing::info!(
         event = "validation_start",
         repo = "corinth-canal",
@@ -338,6 +343,7 @@ fn run_validation(
         Err(error) => {
             let error_message = error.to_string();
             emit_validation_finish(
+                observer,
                 ctx,
                 validation_started,
                 "model_setup_failed",
@@ -349,7 +355,13 @@ fn run_validation(
 
     if !model.router_loaded() {
         let error = format!("router did not load for checkpoint '{}'", ctx.spec.path);
-        emit_validation_finish(ctx, validation_started, "router_load_failed", Some(&error));
+        emit_validation_finish(
+            observer,
+            ctx,
+            validation_started,
+            "router_load_failed",
+            Some(&error),
+        );
         return Err(Error::other(error).into());
     }
 
@@ -398,6 +410,7 @@ fn run_validation(
                     "prompt_embedding_failed",
                 ));
                 emit_validation_finish(
+                    observer,
                     ctx,
                     validation_started,
                     "prompt_embedding_failed",
@@ -460,6 +473,7 @@ fn run_validation(
             "gpu_setup_failed",
         ));
         emit_validation_finish(
+            observer,
             ctx,
             validation_started,
             "gpu_setup_failed",
@@ -600,7 +614,13 @@ fn run_validation(
             &metrics,
             "tick_failed",
         ));
-        emit_validation_finish(ctx, validation_started, "tick_failed", Some(&error_message));
+        emit_validation_finish(
+            observer,
+            ctx,
+            validation_started,
+            "tick_failed",
+            Some(&error_message),
+        );
         return Err(error);
     }
 
@@ -643,7 +663,7 @@ fn run_validation(
         run_dir.display()
     );
 
-    emit_validation_finish(ctx, validation_started, "completed", None);
+    emit_validation_finish(observer, ctx, validation_started, "completed", None);
 
     drop(model);
     drop(accelerator);
