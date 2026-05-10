@@ -303,6 +303,10 @@ fn resolve_sentry_release(git_sha: &str) -> String {
         return release;
     }
 
+    if !git_sha.trim().is_empty() && git_sha != "unknown" {
+        return format!("corinth-canal@{git_sha}");
+    }
+
     if let Some(release) = sentry::release_name!() {
         let release = release.into_owned();
         if !release.trim().is_empty() {
@@ -310,7 +314,7 @@ fn resolve_sentry_release(git_sha: &str) -> String {
         }
     }
 
-    format!("corinth-canal@{git_sha}")
+    "corinth-canal@unknown".to_owned()
 }
 
 impl CommandObserver {
