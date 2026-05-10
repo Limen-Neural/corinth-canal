@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
-use std::sync::Once;
+use std::sync::{Once, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use sentry::ClientInitGuard;
@@ -243,16 +243,22 @@ pub fn checkpoint_slug(path: &str) -> Option<String> {
 }
 
 pub fn run_id() -> String {
-    std::env::var("AGENTOS_RUN_ID")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| {
-            let millis = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|duration| duration.as_millis())
-                .unwrap_or(0);
-            format!("corinth-canal-{millis}")
+    static RUN_ID: OnceLock<String> = OnceLock::new();
+
+    RUN_ID
+        .get_or_init(|| {
+            std::env::var("AGENTOS_RUN_ID")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| {
+                    let millis = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|duration| duration.as_millis())
+                        .unwrap_or(0);
+                    format!("corinth-canal-{millis}")
+                })
         })
+        .clone()
 }
 
 /// Resolve the git SHA stamped into observability events.
@@ -528,6 +534,13 @@ mod tests {
         let value = run_probe("run_id", &[]);
         assert!(value.starts_with("corinth-canal-"));
         assert!(value["corinth-canal-".len()..].parse::<u128>().is_ok());
+    }
+
+    #[test]
+    fn run_id_is_stable_within_a_process() {
+        let first = run_id();
+        let second = run_id();
+        assert_eq!(first, second);
     }
 
     #[test]
