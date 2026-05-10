@@ -88,13 +88,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0  # needed for set-commits
+      - name: Install pinned sentry-cli
+        env:
+          SENTRY_CLI_VERSION: "3.4.0"
+        run: |
+          set -euo pipefail
+          asset_name="sentry-cli-Linux-x86_64"
+          asset_url="https://downloads.sentry-cdn.com/sentry-cli/${SENTRY_CLI_VERSION}/${asset_name}"
+          expected_sha256="$(curl -fsSL "https://release-registry.services.sentry.io/apps/sentry-cli/${SENTRY_CLI_VERSION}" | python -c 'import json,sys; print(json.load(sys.stdin)["files"]["sentry-cli-Linux-x86_64"]["checksums"]["sha256-hex"])')"
+          curl -fsSL "$asset_url" -o sentry-cli
+          echo "${expected_sha256}  sentry-cli" | sha256sum -c -
+          chmod +x sentry-cli
+          sudo mv sentry-cli /usr/local/bin/sentry-cli
+          sentry-cli --version
       - name: Create Sentry Release
         run: |
-          curl -sL https://sentry.io/get-cli/ | bash
-          VERSION="corinth-canal@$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
-          sentry-cli releases new $VERSION
-          sentry-cli releases set-commits --auto $VERSION
-          sentry-cli releases finalize $VERSION
+          VERSION="corinth-canal@$(git rev-parse --short HEAD)"
+          sentry-cli releases new "$VERSION"
+          sentry-cli releases set-commits --auto "$VERSION"
+          sentry-cli releases finalize "$VERSION"
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: limen-neural

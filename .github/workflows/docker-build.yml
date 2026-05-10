@@ -7,6 +7,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: docker-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   docker:
     runs-on: [self-hosted, Linux, X64, cuda-13.2, sm_120, gpu]
