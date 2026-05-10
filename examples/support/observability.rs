@@ -138,8 +138,8 @@ pub fn init_sentry(command: &'static str) -> Option<ClientInitGuard> {
     Some(guard)
 }
 
-pub fn capture_top_level_error(command: &'static str, error: &(dyn std::error::Error + 'static)) {
-    capture_scoped_error(command, &run_id(), SafeDiagnosticData::default(), error);
+pub fn capture_top_level_error(_command: &'static str, error: &(dyn std::error::Error + 'static)) {
+    sentry::capture_error(error);
 }
 
 pub fn annotate_scope(
