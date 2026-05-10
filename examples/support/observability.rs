@@ -459,15 +459,17 @@ pub fn error_category(status: Option<&str>, error: Option<&str>) -> &'static str
             let message = error.unwrap_or_default().to_ascii_lowercase();
             if message.contains("strict_repeat_check") {
                 "experiment_error"
-            } else if message.contains("checkpoint")
-                || message.contains("config")
-                || message.contains("invalid configuration")
+            } else if message.contains("invalid configuration")
                 || message.contains("missing telemetry csv path")
-                || message.contains("no gguf")
             {
                 "config_error"
             } else if message.contains("gpu") || message.contains("cuda") {
                 "gpu_error"
+            } else if message.contains("checkpoint")
+                || message.contains("config")
+                || message.contains("no gguf")
+            {
+                "config_error"
             } else if error.is_some() {
                 "unknown_error"
             } else {
@@ -605,6 +607,10 @@ mod tests {
                 )
             ),
             "config_error"
+        );
+        assert_eq!(
+            error_category(None, Some("cuda config mismatch during device init")),
+            "gpu_error"
         );
         assert_eq!(
             error_category(None, Some("mystery failure")),
