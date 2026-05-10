@@ -1,9 +1,11 @@
 ARG CUDA_VERSION=13.1.0
+ARG CUDAHOSTCXX=/usr/bin/clang++
 
 # Build stage
 FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS builder
 
 ARG RUST_VERSION=stable
+ARG CUDAHOSTCXX
 RUN apt-get update && apt-get install -y \
     curl \
     build-essential \
@@ -12,6 +14,7 @@ RUN apt-get update && apt-get install -y \
     clang \
     llvm \
     && rm -rf /var/lib/apt/lists/*
+ENV CUDAHOSTCXX=${CUDAHOSTCXX}
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh && \
     sh /tmp/rustup.sh -y --default-toolchain ${RUST_VERSION} && \
