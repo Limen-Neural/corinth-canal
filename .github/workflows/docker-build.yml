@@ -1,4 +1,4 @@
-name: Docker Build (CUDA 13.2)
+name: Docker Build (CUDA 13.1)
 on:
   pull_request:
     branches:
@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   docker:
-    runs-on: [self-hosted, Linux, X64, cuda-13.2, sm_120, gpu]
+    runs-on: [self-hosted, Linux, X64, cuda-13.1, sm_120, gpu]
     permissions:
       contents: read
       packages: write
@@ -47,7 +47,7 @@ jobs:
           push: ${{ github.event_name == 'push' }}
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
-            CUDA_VERSION=13.2.0
+            CUDA_VERSION=13.1.0
             RUST_VERSION=stable
           cache-from: type=gha
           cache-to: type=gha,mode=max

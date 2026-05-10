@@ -1,4 +1,4 @@
-ARG CUDA_VERSION=13.2.0
+ARG CUDA_VERSION=13.1.0
 
 # Build stage
 FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS builder
