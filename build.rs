@@ -78,6 +78,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CUDA_HOME");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
     println!("cargo:rerun-if-env-changed=NVCC");
+    println!("cargo:rerun-if-env-changed=CUDAHOSTCXX");
 
     // Skip all CUDA compilation for non-CUDA builds (e.g. `--no-default-features`).
     let cuda_enabled = env::var_os("CARGO_FEATURE_CUDA").is_some();
@@ -120,6 +121,7 @@ fn main() {
             );
         }
     };
+    let host_compiler = env::var_os("CUDAHOSTCXX").map(PathBuf::from);
 
     for &(cu_name, fatbin_name) in kernels {
         let source = cu_dir.join(cu_name);
@@ -130,23 +132,26 @@ fn main() {
         //   * PTX for compute_120 (used as a JIT fallback on future archs).
         run_nvcc(
             &nvcc,
-            &[
-                "-fatbin".into(),
-                "-gencode=arch=compute_120,code=sm_120".into(),
-                "-gencode=arch=compute_120,code=compute_120".into(),
-                "-O3".into(),
-                "--use_fast_math".into(),
-                "--restrict".into(),
-                "--threads".into(),
-                "0".into(),
-                "-D__STRICT_ANSI__".into(),
-                "--allow-unsupported-compiler".into(),
-                "-I".into(),
-                cu_dir.display().to_string(),
-                "-o".into(),
-                output.display().to_string(),
-                source.display().to_string(),
-            ],
+            &nvcc_args(
+                host_compiler.as_deref(),
+                &[
+                    "-fatbin".into(),
+                    "-gencode=arch=compute_120,code=sm_120".into(),
+                    "-gencode=arch=compute_120,code=compute_120".into(),
+                    "-std=c++20".into(),
+                    "-O3".into(),
+                    "--use_fast_math".into(),
+                    "--restrict".into(),
+                    "--threads".into(),
+                    "0".into(),
+                    "--allow-unsupported-compiler".into(),
+                    "-I".into(),
+                    cu_dir.display().to_string(),
+                    "-o".into(),
+                    output.display().to_string(),
+                    source.display().to_string(),
+                ],
+            ),
             cu_name,
         );
 
@@ -159,7 +164,7 @@ fn main() {
         );
     }
 
-    build_myelin_shim(&nvcc, &cu_dir, &out_dir);
+    build_myelin_shim(&nvcc, host_compiler.as_deref(), &cu_dir, &out_dir);
     emit_cuda_runtime_linking(&nvcc);
 }
 
@@ -187,6 +192,16 @@ fn find_nvcc() -> Option<PathBuf> {
         })
 }
 
+fn nvcc_args(host_compiler: Option<&Path>, base_args: &[String]) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(host_compiler) = host_compiler {
+        args.push("-ccbin".into());
+        args.push(host_compiler.display().to_string());
+    }
+    args.extend(base_args.iter().cloned());
+    args
+}
+
 fn run_nvcc(nvcc: &Path, args: &[String], label: &str) {
     let status = Command::new(nvcc)
         .args(args)
@@ -198,29 +213,33 @@ fn run_nvcc(nvcc: &Path, args: &[String], label: &str) {
     }
 }
 
-fn build_myelin_shim(nvcc: &Path, cu_dir: &Path, out_dir: &Path) {
+fn build_myelin_shim(nvcc: &Path, host_compiler: Option<&Path>, cu_dir: &Path, out_dir: &Path) {
     let source = cu_dir.join("myelin_shim.cu");
     let object = out_dir.join("myelin_shim.o");
 
     run_nvcc(
         nvcc,
-        &[
-            "-c".into(),
-            "-arch=sm_120".into(),
-            "-O3".into(),
-            "--use_fast_math".into(),
-            "--restrict".into(),
-            "--threads".into(),
-            "0".into(),
-            "--allow-unsupported-compiler".into(),
-            "-I".into(),
-            cu_dir.display().to_string(),
-            "-Xcompiler".into(),
-            "-fPIC".into(),
-            "-o".into(),
-            object.display().to_string(),
-            source.display().to_string(),
-        ],
+        &nvcc_args(
+            host_compiler,
+            &[
+                "-c".into(),
+                "-arch=sm_120".into(),
+                "-std=c++20".into(),
+                "-O3".into(),
+                "--use_fast_math".into(),
+                "--restrict".into(),
+                "--threads".into(),
+                "0".into(),
+                "--allow-unsupported-compiler".into(),
+                "-I".into(),
+                cu_dir.display().to_string(),
+                "-Xcompiler".into(),
+                "-fPIC".into(),
+                "-o".into(),
+                object.display().to_string(),
+                source.display().to_string(),
+            ],
+        ),
         "myelin_shim.cu",
     );
 

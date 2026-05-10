@@ -3,6 +3,9 @@ on:
   pull_request:
     branches:
       - '**'
+  push:
+    branches:
+      - '**'
   schedule:
     - cron: '0 0 * * *'  # Run daily at midnight
 
@@ -18,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     name: CPU Tests (GitHub hosted)
     timeout-minutes: 20
+    env:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,8 +30,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install components (rustfmt, clippy)
-        run: rustup component add rustfmt clippy
+      - name: Install components (rustfmt, clippy, llvm-tools)
+        run: rustup component add rustfmt clippy llvm-tools-preview
 
       - name: Cache Cargo + target
         uses: Swatinem/rust-cache@v2
@@ -45,12 +50,27 @@ jobs:
 
       - name: Check examples (CPU-only)
         run: cargo check --examples --no-default-features --locked
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate coverage report
+        run: cargo llvm-cov --lib --no-default-features --locked --lcov --output-path lcov.info
+
+      - name: Upload coverage to Codecov
+        if: ${{ env.CODECOV_TOKEN != '' }}
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ env.CODECOV_TOKEN }}
+          files: lcov.info
+          fail_ci_if_error: true
+          verbose: true
   
   cpu-tests-ryzen:
     name: CPU Heavy (Self-hosted Ryzen)
     needs: cpu-tests-github
-    if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux, x64, ryzen]
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, ryzen]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4

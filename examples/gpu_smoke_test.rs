@@ -3,10 +3,29 @@ mod support;
 use corinth_canal::{gpu::GpuAccelerator, model::Model};
 use std::io::Error;
 use std::time::Instant;
-use support::{config::RunConfig, default_spiking_model_config};
+use support::{
+    config::RunConfig,
+    default_spiking_model_config,
+    observability::{self, CommandObserver, SafeDiagnosticData},
+};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenvy::from_filename(".env.local");
+    let _sentry_guard = observability::init_sentry("gpu_smoke_test");
+    let observer = observability::start_command("gpu_smoke_test");
+    let result = run(&observer);
+    observer.finish(&result, SafeDiagnosticData::default());
+    result
+}
+
+fn run(observer: &CommandObserver) -> Result<(), Box<dyn std::error::Error>> {
     let run_cfg = RunConfig::from_env();
+    let mut safe = SafeDiagnosticData::default().with_heartbeat_enabled(false);
+    if let Some(model_slug) = observability::checkpoint_slug(&run_cfg.gguf_checkpoint_path) {
+        safe = safe.with_model_slug(&model_slug);
+        observer.annotate(safe);
+    } else {
+        observer.annotate(safe);
+    }
     if run_cfg.gguf_checkpoint_path.trim().is_empty() {
         return Err(Error::other("GGUF_CHECKPOINT_PATH must point to a GGUF checkpoint").into());
     }

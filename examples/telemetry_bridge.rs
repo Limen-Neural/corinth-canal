@@ -3,11 +3,32 @@
 mod support;
 
 use corinth_canal::{EMBEDDING_DIM, model::Model, moe::RoutingMode, telemetry::TelemetrySnapshot};
-use support::{config::RunConfig, default_spiking_model_config};
+use support::{
+    config::RunConfig,
+    default_spiking_model_config,
+    observability::{self, CommandObserver, SafeDiagnosticData},
+};
 
 fn main() -> corinth_canal::Result<()> {
     let _ = dotenvy::from_filename(".env.local");
+    let _sentry_guard = observability::init_sentry("telemetry_bridge");
+    let observer = observability::start_command("telemetry_bridge");
+    let result = run(&observer);
+    observer.finish(&result, SafeDiagnosticData::default());
+    result
+}
+
+fn run(observer: &CommandObserver) -> corinth_canal::Result<()> {
     let run_cfg = RunConfig::from_env();
+    let mut safe = SafeDiagnosticData::default()
+        .with_telemetry_source("synthetic")
+        .with_heartbeat_enabled(false);
+    if let Some(model_slug) = observability::checkpoint_slug(&run_cfg.gguf_checkpoint_path) {
+        safe = safe.with_model_slug(&model_slug);
+        observer.annotate(safe);
+    } else {
+        observer.annotate(safe);
+    }
     let routing_mode = run_cfg
         .routing_mode_override
         .unwrap_or(RoutingMode::SpikingSim);

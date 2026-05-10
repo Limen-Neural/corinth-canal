@@ -12,8 +12,9 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use support::{
     ResolvedTelemetry, RunConfig, TelemetrySource, ValidationModelSpec,
-    default_spiking_model_config, heartbeat_gain, observability, prompt_embedding_for_validation,
-    telemetry_snapshot_for_tick,
+    default_spiking_model_config, heartbeat_gain,
+    observability::{self, CommandObserver, SafeDiagnosticData},
+    prompt_embedding_for_validation, telemetry_snapshot_for_tick,
 };
 
 #[derive(Debug, Serialize)]
@@ -135,11 +136,21 @@ fn heartbeat_slug_for(enabled: bool) -> &'static str {
 }
 
 fn emit_validation_finish(
+    observer: &CommandObserver,
     ctx: &RunContext<'_>,
     started: Instant,
     status: &'static str,
     error: Option<&str>,
 ) {
+    let category = observability::error_category(Some(status), error);
+    observer.annotate(
+        SafeDiagnosticData::default()
+            .with_model_slug(&ctx.spec.slug)
+            .with_telemetry_source(&ctx.resolved.source_label)
+            .with_heartbeat_enabled(ctx.heartbeat_enabled)
+            .with_validation_status(status)
+            .with_error_category(category),
+    );
     tracing::info!(
         event = "validation_finish",
         repo = "corinth-canal",
@@ -153,7 +164,7 @@ fn emit_validation_finish(
         ticks = ctx.ticks,
         latency_ms = started.elapsed().as_millis() as u64,
         success = status == "completed",
-        error_category = observability::error_category(Some(status), error),
+        error_category = category,
         "validation_finish"
     );
 }
@@ -178,39 +189,17 @@ struct RunContext<'a> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = dotenvy::from_filename(".env.local");
-    observability::init_tracing();
-    let command_run_id = observability::run_id();
-    let git_sha = observability::git_sha();
-    let started = Instant::now();
-
-    tracing::info!(
-        event = "command_start",
-        repo = "corinth-canal",
-        command = "saaq_latent_calibration",
-        run_id = %command_run_id,
-        git_sha = %git_sha,
-        "command_start"
-    );
-
-    let result = run_main();
-    let error = result.as_ref().err().map(|error| error.to_string());
-    tracing::info!(
-        event = "command_finish",
-        repo = "corinth-canal",
-        command = "saaq_latent_calibration",
-        run_id = %command_run_id,
-        git_sha = %git_sha,
-        latency_ms = started.elapsed().as_millis() as u64,
-        success = result.is_ok(),
-        error_category = observability::error_category(None, error.as_deref()),
-        "command_finish"
-    );
-
+    let _sentry_guard = observability::init_sentry("saaq_latent_calibration");
+    let observer = observability::start_command("saaq_latent_calibration");
+    let result = run_main(&observer);
+    observer.finish(&result, SafeDiagnosticData::default());
     result
 }
 
-fn run_main() -> Result<(), Box<dyn std::error::Error>> {
+fn run_main(observer: &CommandObserver) -> Result<(), Box<dyn std::error::Error>> {
     let cfg = RunConfig::from_env();
+    observer
+        .annotate(SafeDiagnosticData::default().with_telemetry_source(&cfg.telemetry.source_label));
 
     // Effective tick count: when TICKS=0 and CSV replay is live, use the full
     // CSV length so SR.jl corpus runs cover exactly one loop with zero
@@ -275,7 +264,7 @@ fn run_main() -> Result<(), Box<dyn std::error::Error>> {
                             saaq_rule: cfg.saaq_rule,
                             run_tag: run_tag_ref,
                         };
-                        run_validation(&ctx, pending)?;
+                        run_validation(observer, &ctx, pending)?;
                     }
                 }
             }
@@ -307,10 +296,17 @@ fn run_main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run_validation(
+    observer: &CommandObserver,
     ctx: &RunContext<'_>,
     pending: &mut Vec<PendingIndexRow>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let validation_started = Instant::now();
+    observer.annotate(
+        SafeDiagnosticData::default()
+            .with_model_slug(&ctx.spec.slug)
+            .with_telemetry_source(&ctx.resolved.source_label)
+            .with_heartbeat_enabled(ctx.heartbeat_enabled),
+    );
     tracing::info!(
         event = "validation_start",
         repo = "corinth-canal",
@@ -347,6 +343,7 @@ fn run_validation(
         Err(error) => {
             let error_message = error.to_string();
             emit_validation_finish(
+                observer,
                 ctx,
                 validation_started,
                 "model_setup_failed",
@@ -358,7 +355,13 @@ fn run_validation(
 
     if !model.router_loaded() {
         let error = format!("router did not load for checkpoint '{}'", ctx.spec.path);
-        emit_validation_finish(ctx, validation_started, "router_load_failed", Some(&error));
+        emit_validation_finish(
+            observer,
+            ctx,
+            validation_started,
+            "router_load_failed",
+            Some(&error),
+        );
         return Err(Error::other(error).into());
     }
 
@@ -407,6 +410,7 @@ fn run_validation(
                     "prompt_embedding_failed",
                 ));
                 emit_validation_finish(
+                    observer,
                     ctx,
                     validation_started,
                     "prompt_embedding_failed",
@@ -469,6 +473,7 @@ fn run_validation(
             "gpu_setup_failed",
         ));
         emit_validation_finish(
+            observer,
             ctx,
             validation_started,
             "gpu_setup_failed",
@@ -609,7 +614,13 @@ fn run_validation(
             &metrics,
             "tick_failed",
         ));
-        emit_validation_finish(ctx, validation_started, "tick_failed", Some(&error_message));
+        emit_validation_finish(
+            observer,
+            ctx,
+            validation_started,
+            "tick_failed",
+            Some(&error_message),
+        );
         return Err(error);
     }
 
@@ -652,7 +663,7 @@ fn run_validation(
         run_dir.display()
     );
 
-    emit_validation_finish(ctx, validation_started, "completed", None);
+    emit_validation_finish(observer, ctx, validation_started, "completed", None);
 
     drop(model);
     drop(accelerator);
