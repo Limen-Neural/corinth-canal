@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::borrow::Cow;
+use std::cell::RefCell;
 #[cfg(test)]
 use std::ffi::OsString;
 use std::path::Path;
@@ -56,6 +57,7 @@ pub struct CommandObserver {
     run_id: String,
     git_sha: String,
     started: Instant,
+    safe_data: RefCell<OwnedDiagnosticData>,
 }
 
 pub trait ErrorReport {
@@ -64,6 +66,51 @@ pub trait ErrorReport {
 
 #[cfg(test)]
 const SUBPROCESS_PROBE_ARG: &str = "__observability_probe";
+
+#[derive(Debug, Clone, Default)]
+struct OwnedDiagnosticData {
+    model_slug: Option<String>,
+    telemetry_source: Option<String>,
+    heartbeat_enabled: Option<bool>,
+    validation_status: Option<String>,
+    error_category: Option<String>,
+}
+
+impl OwnedDiagnosticData {
+    fn merge(&mut self, data: SafeDiagnosticData<'_>) {
+        if let Some(model_slug) = data.model_slug {
+            self.model_slug = Some(model_slug.to_owned());
+        }
+        if let Some(telemetry_source) = data.telemetry_source {
+            self.telemetry_source = Some(telemetry_source.to_owned());
+        }
+        if let Some(heartbeat_enabled) = data.heartbeat_enabled {
+            self.heartbeat_enabled = Some(heartbeat_enabled);
+        }
+        if let Some(validation_status) = data.validation_status {
+            self.validation_status = Some(validation_status.to_owned());
+        }
+        if let Some(error_category) = data.error_category {
+            self.error_category = Some(error_category.to_owned());
+        }
+    }
+
+    fn with_status(mut self, validation_status: &str, error_category: &str) -> Self {
+        self.validation_status = Some(validation_status.to_owned());
+        self.error_category = Some(error_category.to_owned());
+        self
+    }
+
+    fn as_safe(&self) -> SafeDiagnosticData<'_> {
+        SafeDiagnosticData {
+            model_slug: self.model_slug.as_deref(),
+            telemetry_source: self.telemetry_source.as_deref(),
+            heartbeat_enabled: self.heartbeat_enabled,
+            validation_status: self.validation_status.as_deref(),
+            error_category: self.error_category.as_deref(),
+        }
+    }
+}
 
 pub fn init_tracing() {
     INIT.call_once(|| {
@@ -85,6 +132,7 @@ pub fn start_command(command: &'static str) -> CommandObserver {
         run_id: run_id(),
         git_sha: git_sha(),
         started: Instant::now(),
+        safe_data: RefCell::new(OwnedDiagnosticData::default()),
     };
     annotate_scope(
         observer.command,
@@ -269,7 +317,17 @@ impl CommandObserver {
     }
 
     pub fn annotate(&self, data: SafeDiagnosticData<'_>) {
-        annotate_scope(self.command, &self.run_id, &self.git_sha, data);
+        let snapshot = {
+            let mut safe_data = self.safe_data.borrow_mut();
+            safe_data.merge(data);
+            safe_data.clone()
+        };
+        annotate_scope(
+            self.command,
+            &self.run_id,
+            &self.git_sha,
+            snapshot.as_safe(),
+        );
     }
 
     pub fn finish<T, E>(&self, result: &Result<T, E>, data: SafeDiagnosticData<'_>)
@@ -286,11 +344,20 @@ impl CommandObserver {
             Some(resolved_status),
             error_message.as_deref(),
         ));
-        let enriched = data
-            .with_validation_status(resolved_status)
-            .with_error_category(resolved_category);
+        let enriched = {
+            let mut safe_data = self.safe_data.borrow_mut();
+            safe_data.merge(data);
+            safe_data
+                .clone()
+                .with_status(resolved_status, resolved_category)
+        };
 
-        annotate_scope(self.command, &self.run_id, &self.git_sha, enriched);
+        annotate_scope(
+            self.command,
+            &self.run_id,
+            &self.git_sha,
+            enriched.as_safe(),
+        );
         tracing::info!(
             event = "command_finish",
             repo = REPO_NAME,
@@ -305,7 +372,12 @@ impl CommandObserver {
         );
 
         if let Err(error) = result.as_ref() {
-            capture_scoped_error(self.command, &self.run_id, enriched, error.as_dyn_error());
+            capture_scoped_error(
+                self.command,
+                &self.run_id,
+                enriched.as_safe(),
+                error.as_dyn_error(),
+            );
         }
     }
 }
@@ -510,6 +582,26 @@ mod tests {
             error_category(None, Some("mystery failure")),
             "unknown_error"
         );
+    }
+
+    #[test]
+    fn owned_diagnostic_data_preserves_prior_context_when_new_data_is_sparse() {
+        let mut data = OwnedDiagnosticData::default();
+        data.merge(
+            SafeDiagnosticData::default()
+                .with_model_slug("model_a")
+                .with_telemetry_source("csv")
+                .with_heartbeat_enabled(false),
+        );
+
+        let merged_data = data.clone().with_status("tick_failed", "experiment_error");
+        let merged = merged_data.as_safe();
+
+        assert_eq!(merged.model_slug, Some("model_a"));
+        assert_eq!(merged.telemetry_source, Some("csv"));
+        assert_eq!(merged.heartbeat_enabled, Some(false));
+        assert_eq!(merged.validation_status, Some("tick_failed"));
+        assert_eq!(merged.error_category, Some("experiment_error"));
     }
 
     #[test]
