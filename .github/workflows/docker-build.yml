@@ -9,7 +9,7 @@ on:
 
 jobs:
   docker:
-    runs-on: [self-hosted, Linux, X64, cuda-13-2, sm_120, gpu]
+    runs-on: [self-hosted, Linux, X64, cuda-13.2, sm_120, gpu]
     permissions:
       contents: read
       packages: write
