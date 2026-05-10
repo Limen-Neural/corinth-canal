@@ -1,5 +1,7 @@
+ARG CUDA_VERSION=13.2.0
+
 # Build stage
-FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS builder
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS builder
 
 ARG RUST_VERSION=stable
 RUN apt-get update && apt-get install -y \
@@ -22,7 +24,7 @@ COPY . .
 RUN cargo build --release --features cuda --example gpu_smoke_test
 
 # Runtime stage
-FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
+FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu22.04
 
 WORKDIR /app
 COPY --from=builder /app/target/release/examples/gpu_smoke_test /app/
