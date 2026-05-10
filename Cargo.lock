@@ -1799,6 +1799,7 @@ dependencies = [
  "native-tls",
  "reqwest",
  "sentry-actix",
+ "sentry-anyhow",
  "sentry-backtrace",
  "sentry-contexts",
  "sentry-core",
@@ -1819,6 +1820,17 @@ dependencies = [
  "actix-web",
  "bytes",
  "futures-util",
+ "sentry-core",
+]
+
+[[package]]
+name = "sentry-anyhow"
+version = "0.48.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fafe70e622ded2d3b75dc7889ecb5391b4c22d850b5a36e81af4615cbe687f2"
+dependencies = [
+ "anyhow",
+ "sentry-backtrace",
  "sentry-core",
 ]
 
