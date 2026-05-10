@@ -455,13 +455,15 @@ pub fn error_category(status: Option<&str>, error: Option<&str>) -> &'static str
             let message = error.unwrap_or_default().to_ascii_lowercase();
             if message.contains("strict_repeat_check") {
                 "experiment_error"
-            } else if message.contains("gpu") || message.contains("cuda") {
-                "gpu_error"
             } else if message.contains("checkpoint")
                 || message.contains("config")
+                || message.contains("invalid configuration")
+                || message.contains("missing telemetry csv path")
                 || message.contains("no gguf")
             {
                 "config_error"
+            } else if message.contains("gpu") || message.contains("cuda") {
+                "gpu_error"
             } else if error.is_some() {
                 "unknown_error"
             } else {
@@ -589,6 +591,15 @@ mod tests {
         );
         assert_eq!(
             error_category(None, Some("config parse failed")),
+            "config_error"
+        );
+        assert_eq!(
+            error_category(
+                None,
+                Some(
+                    "invalid configuration: missing telemetry CSV path. Usage: cargo run --example csv_replay <telemetry.csv>; CSV format: timestamp_ms,gpu_temp_c,gpu_power_w,cpu_tctl_c,cpu_package_power_w"
+                )
+            ),
             "config_error"
         );
         assert_eq!(
