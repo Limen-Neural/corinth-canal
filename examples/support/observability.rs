@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
 use std::borrow::Cow;
+#[cfg(test)]
+use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Once;
@@ -59,6 +61,9 @@ pub struct CommandObserver {
 pub trait ErrorReport {
     fn as_dyn_error(&self) -> &(dyn std::error::Error + 'static);
 }
+
+#[cfg(test)]
+const SUBPROCESS_PROBE_ARG: &str = "__observability_probe";
 
 pub fn init_tracing() {
     INIT.call_once(|| {
@@ -329,18 +334,28 @@ fn apply_scope(
     scope.set_tag("git_sha", git_sha.to_owned());
     if let Some(model_slug) = data.model_slug {
         scope.set_tag("model_slug", model_slug);
+    } else {
+        scope.remove_tag("model_slug");
     }
     if let Some(telemetry_source) = data.telemetry_source {
         scope.set_tag("telemetry_source", telemetry_source);
+    } else {
+        scope.remove_tag("telemetry_source");
     }
     if let Some(heartbeat_enabled) = data.heartbeat_enabled {
         scope.set_tag("heartbeat_enabled", heartbeat_enabled.to_string());
+    } else {
+        scope.remove_tag("heartbeat_enabled");
     }
     if let Some(validation_status) = data.validation_status {
         scope.set_tag("validation_status", validation_status);
+    } else {
+        scope.remove_tag("validation_status");
     }
     if let Some(error_category) = data.error_category {
         scope.set_tag("error_category", error_category);
+    } else {
+        scope.remove_tag("error_category");
     }
     scope.set_extra("run_id", json!(run_id));
 }
@@ -381,48 +396,74 @@ pub fn error_category(status: Option<&str>, error: Option<&str>) -> &'static str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
+    use std::process::Command as ProcessCommand;
 
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+    #[test]
+    fn subprocess_probe() {
+        if !std::env::args().any(|arg| arg == SUBPROCESS_PROBE_ARG) {
+            return;
+        }
+
+        let value = match std::env::var("OBSERVABILITY_PROBE_MODE").ok().as_deref() {
+            Some("run_id") => run_id(),
+            Some("git_sha") => git_sha(),
+            Some("sentry_enabled") => init_sentry("test_command").is_some().to_string(),
+            other => panic!("unknown probe mode: {other:?}"),
+        };
+        println!("OBSERVABILITY_PROBE_RESULT={value}");
     }
 
-    fn clear_env(key: &str) {
-        unsafe {
-            std::env::remove_var(key);
-        }
-    }
+    fn run_probe(probe_mode: &str, envs: &[(&str, &str)]) -> String {
+        let output = ProcessCommand::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("support::observability::tests::subprocess_probe")
+            .arg("--nocapture")
+            .arg("--")
+            .arg(SUBPROCESS_PROBE_ARG)
+            .env_remove("AGENTOS_RUN_ID")
+            .env_remove("AGENTOS_GIT_SHA")
+            .env_remove("SENTRY_DSN")
+            .env_remove("SENTRY_RELEASE")
+            .env_remove("SENTRY_ENVIRONMENT")
+            .env_remove("OBSERVABILITY_PROBE_MODE")
+            .env("OBSERVABILITY_PROBE_MODE", probe_mode)
+            .envs(
+                envs.iter()
+                    .map(|(k, v)| (OsString::from(k), OsString::from(v))),
+            )
+            .output()
+            .unwrap();
 
-    fn set_env(key: &str, value: &str) {
-        unsafe {
-            std::env::set_var(key, value);
-        }
+        assert!(output.status.success(), "probe failed: {output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("OBSERVABILITY_PROBE_RESULT="))
+            .map(str::to_owned)
+            .expect("missing probe result")
     }
 
     #[test]
     fn run_id_uses_agentos_run_id_when_set() {
-        let _guard = env_lock().lock().unwrap();
-        set_env("AGENTOS_RUN_ID", "run-123");
-        assert_eq!(run_id(), "run-123");
-        clear_env("AGENTOS_RUN_ID");
+        assert_eq!(
+            run_probe("run_id", &[("AGENTOS_RUN_ID", "run-123")]),
+            "run-123"
+        );
     }
 
     #[test]
     fn run_id_falls_back_to_corinth_canal_millis() {
-        let _guard = env_lock().lock().unwrap();
-        clear_env("AGENTOS_RUN_ID");
-        let value = run_id();
+        let value = run_probe("run_id", &[]);
         assert!(value.starts_with("corinth-canal-"));
         assert!(value["corinth-canal-".len()..].parse::<u128>().is_ok());
     }
 
     #[test]
     fn git_sha_uses_agentos_git_sha_when_set() {
-        let _guard = env_lock().lock().unwrap();
-        set_env("AGENTOS_GIT_SHA", "deadbee");
-        assert_eq!(git_sha(), "deadbee");
-        clear_env("AGENTOS_GIT_SHA");
+        assert_eq!(
+            run_probe("git_sha", &[("AGENTOS_GIT_SHA", "deadbee")]),
+            "deadbee"
+        );
     }
 
     #[test]
@@ -473,20 +514,14 @@ mod tests {
 
     #[test]
     fn unset_sentry_dsn_disables_sentry_cleanly() {
-        let _guard = env_lock().lock().unwrap();
-        clear_env("SENTRY_DSN");
-        clear_env("SENTRY_RELEASE");
-        clear_env("SENTRY_ENVIRONMENT");
-        assert!(init_sentry("test_command").is_none());
+        assert_eq!(run_probe("sentry_enabled", &[]), "false");
     }
 
     #[test]
     fn empty_sentry_dsn_disables_sentry_cleanly() {
-        let _guard = env_lock().lock().unwrap();
-        set_env("SENTRY_DSN", "   ");
-        clear_env("SENTRY_RELEASE");
-        clear_env("SENTRY_ENVIRONMENT");
-        assert!(init_sentry("test_command").is_none());
-        clear_env("SENTRY_DSN");
+        assert_eq!(
+            run_probe("sentry_enabled", &[("SENTRY_DSN", "   ")]),
+            "false"
+        );
     }
 }
