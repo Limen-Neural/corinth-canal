@@ -32,3 +32,4 @@ AGENTS.md
 
 # Scripts
 /scripts/*
+configs/local_lineup.toml

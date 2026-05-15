@@ -200,7 +200,7 @@ fn capture_jit_log(bytes: &[u8]) -> String {
         LOG_CAP as *mut c_void,
         info_buf.as_mut_ptr() as *mut c_void,
         LOG_CAP as *mut c_void,
-        0usize as *mut c_void,
+        std::ptr::null_mut(),
     ];
 
     let mut module: cuda::CUmodule = ptr::null_mut();
