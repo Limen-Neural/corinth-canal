@@ -334,7 +334,10 @@ pub fn telemetry_csv_path_from_env() -> PathBuf {
             return PathBuf::from(trimmed);
         }
     }
-    PathBuf::from("/home/raulmc/Julia/Surrogate_Viz.jl/telemetry.csv")
+    // Fallback to a repo-relative placeholder or just a generic name.
+    // The runner will handle the "file not found" case by falling back
+    // to synthetic telemetry.
+    PathBuf::from("telemetry.csv")
 }
 
 const TELEMETRY_CSV_HEADER: &str =
@@ -561,11 +564,6 @@ pub fn llama_embedding_binary_optional() -> Option<PathBuf> {
         if binary.exists() {
             return Some(binary);
         }
-    }
-
-    let local = PathBuf::from("/home/raulmc/llama.cpp/build/bin/llama-embedding");
-    if local.exists() {
-        return Some(local);
     }
 
     None
@@ -836,12 +834,7 @@ mod tests {
 
     #[test]
     fn csv_source_label_maps_telemetry_stem_to_csv_re4() {
-        assert_eq!(
-            csv_source_label(Path::new(
-                "/home/raulmc/Julia/Surrogate_Viz.jl/telemetry.csv"
-            )),
-            "csv_re4"
-        );
+        assert_eq!(csv_source_label(Path::new("telemetry.csv")), "csv_re4");
         assert_eq!(
             csv_source_label(Path::new("/tmp/cyberpunk2077_combat.csv")),
             "csv_cyberpunk2077_combat"

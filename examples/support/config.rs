@@ -110,12 +110,15 @@ fn resolve_validation_models(
         match load_lineup_file(path) {
             Ok(models) => return models,
             Err(err) => {
+                let path_str = path.display().to_string();
+                let hint = if path_str.contains("/absolute/path/to/") {
+                    "\n\nHINT: The path appears to be a placeholder from .env.example or a config template.\n      Please update LINEUP_CONFIG in .env.local with a real path."
+                } else {
+                    ""
+                };
                 // Hard-fail with a loud message so a typo / missing path is
                 // never silently papered over by autodiscovery.
-                panic!(
-                    "LINEUP_CONFIG={} could not be loaded: {err}",
-                    path.display()
-                );
+                panic!("LINEUP_CONFIG={path_str} could not be loaded: {err}{hint}");
             }
         }
     }
@@ -165,8 +168,13 @@ fn load_lineup_file(path: &Path) -> Result<Vec<ValidationModelSpec>, Box<dyn std
             continue;
         }
         if !Path::new(trimmed_path).exists() {
+            let hint = if trimmed_path.contains("/absolute/path/to/") {
+                " (appears to be a placeholder path)"
+            } else {
+                ""
+            };
             eprintln!(
-                "lineup_config: skipping entry slug={slug} path={trimmed_path}: file not found",
+                "lineup_config: skipping entry slug={slug} path={trimmed_path}: file not found{hint}",
             );
             continue;
         }
