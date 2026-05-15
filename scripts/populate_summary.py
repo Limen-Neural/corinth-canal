@@ -13,13 +13,18 @@ if not INDEX_PATH.exists():
 with open(INDEX_PATH, newline="") as f:
     rows = list(csv.DictReader(f))
 
-# Filter
-filtered = []
+# Group by (model_slug, repeat_idx) and keep the one with the latest run_id
+latest_runs = {}
 for r in rows:
     if r.get("model_slug") in TARGET_MODELS and \
        r.get("telemetry_source") == "csv_re4_path_tracing_telemetry" and \
        r.get("heartbeat_enabled") == "false":
-        filtered.append(r)
+        key = (r["model_slug"], r["repeat_idx"])
+        # Use run_id for sorting; it starts with a timestamp
+        if key not in latest_runs or r["run_id"] > latest_runs[key]["run_id"]:
+            latest_runs[key] = r
+
+filtered = list(latest_runs.values())
 
 # Sort by model, then repeat
 filtered.sort(key=lambda x: (x["model_slug"], int(x["repeat_idx"])))
@@ -32,14 +37,14 @@ for r in filtered:
     status = r["validation_status"]
     run_dir = Path(r["run_dir"])
     latent_csv = run_dir / "latent_telemetry.csv"
-    
+
     if not latent_csv.exists():
         table_rows.append(f"| {model} | {repeat} | {status} (missing latent) | - | - | - | - | - | - | - | - |")
         continue
-        
+
     with open(latent_csv, newline="") as f:
         l_rows = list(csv.DictReader(f))
-        
+
     if not l_rows:
         table_rows.append(f"| {model} | {repeat} | {status} (empty latent) | 0 | - | - | - | - | - | - | - | - |")
         continue
@@ -47,20 +52,20 @@ for r in filtered:
     entropies = [float(x["routing_entropy"]) for x in l_rows if "routing_entropy" in x]
     v15_targets = [float(x["saaq_delta_q_v15_target"]) for x in l_rows if "saaq_delta_q_v15_target" in x]
     legacy_targets = [float(x["saaq_delta_q_legacy_target"]) for x in l_rows if "saaq_delta_q_legacy_target" in x]
-    
+
     num_rows = len(l_rows)
-    
+
     ent_mean = statistics.mean(entropies) if entropies else 0.0
     ent_min = min(entropies) if entropies else 0.0
     ent_max = max(entropies) if entropies else 0.0
     ent_range = ent_max - ent_min
-    
+
     v15_final = v15_targets[-1] if v15_targets else 0.0
     v15_range = (max(v15_targets) - min(v15_targets)) if v15_targets else 0.0
-    
+
     leg_final = legacy_targets[-1] if legacy_targets else 0.0
     leg_range = (max(legacy_targets) - min(legacy_targets)) if legacy_targets else 0.0
-    
+
     # Format
     row_str = f"| {model} | {repeat} | {status} | {num_rows} | {ent_mean:.4f} | {ent_min:.4f} | {ent_max:.4f} | {ent_range:.4f} | {v15_final:.4f} | {v15_range:.4f} | {leg_final:.4f} | {leg_range:.4f} |"
     table_rows.append(row_str)
@@ -75,16 +80,18 @@ else:
 
 # Find where to insert table rows
 header_idx = -1
+footer_idx = -1
 for i, line in enumerate(lines):
     if line.strip().startswith("|---|---:|"):
         header_idx = i
-        break
+    elif line.strip().startswith("## Interpretation checklist"):
+        footer_idx = i
 
-if header_idx != -1:
-    out_lines = lines[:header_idx+1] + [r + "\n" for r in table_rows] + lines[header_idx+1:]
+if header_idx != -1 and footer_idx != -1:
+    out_lines = lines[:header_idx+1] + [r + "\n" for r in table_rows] + ["\n"] + lines[footer_idx:]
     with open(SUMMARY_MD_PATH, "w") as f:
         f.writelines(out_lines)
     print("Updated markdown file successfully.")
 else:
-    print("Could not find table header in markdown file!")
+    print("Could not find table header or footer in markdown file!")
     exit(1)
