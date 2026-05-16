@@ -9,9 +9,9 @@ mod adapter;
 mod checkpoint;
 mod routing;
 
-use self::adapter::{ModelAdapter, SynapseSource, resolve_adapter};
+use self::adapter::{resolve_adapter, ModelAdapter, SynapseSource};
 use self::checkpoint::{
-    MappedGgufCheckpoint, extract_named_token_embedding_from_checkpoint, probe_and_map_checkpoint,
+    extract_named_token_embedding_from_checkpoint, probe_and_map_checkpoint, MappedGgufCheckpoint,
 };
 use self::routing::{
     checkpoint_gate_scores, normalize_l2, normalize_to_internal_embedding_dim, resample_embedding,
@@ -19,7 +19,7 @@ use self::routing::{
 };
 use crate::error::{HybridError, Result};
 pub use crate::types::RoutingMode;
-use crate::types::{EMBEDDING_DIM, ModelFamily};
+use crate::types::{ModelFamily, EMBEDDING_DIM};
 
 pub(super) const GGUF_MAGIC: [u8; 4] = [b'G', b'G', b'U', b'F'];
 pub(super) const GGUF_VERSION: u32 = 3;
@@ -378,6 +378,31 @@ impl OlmoeRouter {
                 reason: "checkpoint not loaded".into(),
             })?;
         checkpoint.dequantize_q5_k_tensor(tensor_name, &self.model_path)
+    }
+
+    /// `(src_rows, src_cols)` matching the row-major layout produced by
+    /// [`Self::dequantized_q8_0_synapse_weights`] / [`Self::dequantized_q5_k_synapse_weights`]:
+    /// `dims[0]` contiguous elements per row, `dims[1]` row count (or one row if 1-D).
+    pub(crate) fn synapse_tensor_row_major_shape(
+        &self,
+        tensor_name: &str,
+    ) -> Result<(usize, usize)> {
+        let checkpoint = self
+            .checkpoint
+            .as_ref()
+            .ok_or_else(|| HybridError::ModelLoad {
+                path: self.model_path.clone(),
+                reason: "checkpoint not loaded".into(),
+            })?;
+        let info = checkpoint.tensor_info(tensor_name, &self.model_path)?;
+        if info.dims.is_empty() {
+            return Err(HybridError::UnsupportedFormat(format!(
+                "tensor '{tensor_name}' has no dimensions"
+            )));
+        }
+        let src_cols = info.dims[0];
+        let src_rows = info.dims.get(1).copied().unwrap_or(1);
+        Ok((src_rows, src_cols))
     }
 
     fn probe_and_map(

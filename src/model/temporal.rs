@@ -2,7 +2,7 @@
 
 use super::Model;
 use super::{
-    core::{IZ_NEURONS, N_NEURONS, resolve_gpu_routing_telemetry_path},
+    core::{resolve_gpu_routing_telemetry_path, IZ_NEURONS, N_NEURONS},
     telemetry_io::append_gpu_routing_telemetry_row,
 };
 use crate::funnel::active_neuron_indices;
@@ -152,7 +152,15 @@ impl Model {
                 let final_weights = if weights.len() == expected {
                     weights
                 } else {
-                    Self::resample_weights_to_square(&weights, neuron_count)
+                    let (src_rows, src_cols) = self
+                        .router
+                        .synapse_tensor_row_major_shape(&tensor_name)
+                        .map_err(|e| {
+                            GpuError::MemoryError(format!(
+                                "synapse tensor shape lookup failed: {e}"
+                            ))
+                        })?;
+                    Self::resample_weights_to_square(&weights, neuron_count, src_rows, src_cols)
                 };
                 accelerator.load_synapse_weights_named(&signature, &final_weights)?;
                 return Ok(());
@@ -191,7 +199,15 @@ impl Model {
                 let final_weights = if weights.len() == expected {
                     weights
                 } else {
-                    Self::resample_weights_to_square(&weights, neuron_count)
+                    let (src_rows, src_cols) = self
+                        .router
+                        .synapse_tensor_row_major_shape(&tensor_name)
+                        .map_err(|e| {
+                            GpuError::MemoryError(format!(
+                                "synapse tensor shape lookup failed: {e}"
+                            ))
+                        })?;
+                    Self::resample_weights_to_square(&weights, neuron_count, src_rows, src_cols)
                 };
                 accelerator.load_synapse_weights_named(&signature, &final_weights)?;
                 return Ok(());
@@ -213,24 +229,33 @@ impl Model {
     /// Resample a non-square weight tensor into a `[neuron_count × neuron_count]`
     /// matrix using bilinear interpolation over logical rows/columns.
     ///
+    /// `src_rows` / `src_cols` must match the GGUF tensor layout (row-major:
+    /// `dims[0]` contiguous columns per row, `dims[1]` rows), as produced by the
+    /// checkpoint Q8_0 / Q5_K dequantizers.
+    ///
     /// GGUF tensors like Gemma4 `[2816, 4096]` or LlamaMoe `[3072, 3072]` don't
     /// match the SNN's fixed 2048-neuron grid.  Rather than falling through to
     /// all-zero synthetic weights (which produce zero GIF drive), we resample the
     /// real weight structure so the neuron population inherits the trained gate
     /// distribution.
-    fn resample_weights_to_square(src: &[f32], n: usize) -> Vec<f32> {
+    fn resample_weights_to_square(
+        src: &[f32],
+        n: usize,
+        src_rows: usize,
+        src_cols: usize,
+    ) -> Vec<f32> {
         let total = src.len();
         if total == 0 || n == 0 {
             return vec![0.0; n * n];
         }
 
-        // Infer original rows/cols: try to find a factorisation close to sqrt.
-        let src_cols = (total as f64).sqrt().ceil() as usize;
-        let src_rows = total / src_cols.max(1);
-        // If the factorisation doesn't perfectly tile, clamp access.
         let safe_get = |r: usize, c: usize| -> f32 {
             let idx = r * src_cols + c;
-            if idx < total { src[idx] } else { 0.0 }
+            if idx < total {
+                src[idx]
+            } else {
+                0.0
+            }
         };
 
         let mut out = vec![0.0f32; n * n];
