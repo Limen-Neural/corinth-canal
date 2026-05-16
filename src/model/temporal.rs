@@ -234,8 +234,16 @@ impl Model {
         };
 
         let mut out = vec![0.0f32; n * n];
-        let row_scale = if n > 1 { (src_rows.saturating_sub(1)) as f64 / (n - 1) as f64 } else { 0.0 };
-        let col_scale = if n > 1 { (src_cols.saturating_sub(1)) as f64 / (n - 1) as f64 } else { 0.0 };
+        let row_scale = if n > 1 {
+            (src_rows.saturating_sub(1)) as f64 / (n - 1) as f64
+        } else {
+            0.0
+        };
+        let col_scale = if n > 1 {
+            (src_cols.saturating_sub(1)) as f64 / (n - 1) as f64
+        } else {
+            0.0
+        };
 
         for r in 0..n {
             let src_r = r as f64 * row_scale;
