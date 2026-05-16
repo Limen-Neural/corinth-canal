@@ -20,6 +20,9 @@ Thumbs.db
 # Agent notes
 AGENTS.md
 
+# Local Kilo planning scratch
+.kilo/plans/
+
 # Local env overrides (contributors create their own, never tracked)
 .env.local
 

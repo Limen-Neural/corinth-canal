@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use support::{
     ResolvedTelemetry, RunConfig, TelemetrySource, ValidationModelSpec,
-    default_spiking_model_config, heartbeat_gain,
+    default_spiking_model_config, heartbeat_gain, input_drive_gain_from_env,
     observability::{self, CommandObserver, SafeDiagnosticData},
     prompt_embedding_for_validation, telemetry_snapshot_for_tick,
 };
@@ -210,12 +210,12 @@ fn run_main(observer: &CommandObserver) -> Result<(), Box<dyn std::error::Error>
         (other, _, _) => other,
     };
 
-    if let Some(rows) = cfg.telemetry.row_count() {
-        if effective_ticks > rows {
-            eprintln!(
-                "wraparound: ticks={effective_ticks} > rows={rows}; regression corpus may be contaminated by looped endings. Prefer TICKS=0 or TICKS<={rows}.",
-            );
-        }
+    if let Some(rows) = cfg.telemetry.row_count()
+        && effective_ticks > rows
+    {
+        eprintln!(
+            "wraparound: ticks={effective_ticks} > rows={rows}; regression corpus may be contaminated by looped endings. Prefer TICKS=0 or TICKS<={rows}.",
+        );
     }
 
     println!(
@@ -376,7 +376,7 @@ fn run_validation(
 
     let target_neurons = model.projector_mut().input_neurons();
     let (prompt_embedding, prompt_embedding_source) =
-        match prompt_embedding_for_validation(&ctx.spec.path, ctx.prompt_text, target_neurons) {
+        match prompt_embedding_for_validation(ctx.prompt_text, target_neurons) {
             Ok(result) => result,
             Err(error) => {
                 let error_message = error.to_string();
@@ -487,8 +487,9 @@ fn run_validation(
     let mut calibrator = SnnDualLatentCalibrator::new(saaq_rule);
     let heartbeat = HeartbeatInjector::new(config.heartbeat.clone());
 
+    let drive_gain = input_drive_gain_from_env();
     println!(
-        "validation_start model_slug={} family={:?} architecture={} heartbeat_enabled={} ticks={} repeat={}/{} routing_tensor={} synapse_source={} telemetry_source={}",
+        "validation_start model_slug={} family={:?} architecture={} heartbeat_enabled={} ticks={} repeat={}/{} routing_tensor={} synapse_source={} telemetry_source={} input_drive_gain={:.1}",
         ctx.spec.slug,
         model.router_family(),
         model.router_architecture(),
@@ -499,6 +500,7 @@ fn run_validation(
         model.routing_tensor_name(),
         model.synapse_source(),
         ctx.resolved.source_label,
+        drive_gain,
     );
 
     let mut elapsed_sum_us: u128 = 0;
@@ -508,8 +510,10 @@ fn run_validation(
             let snap = telemetry_snapshot_for_tick(tick, ctx.resolved);
             let snap = heartbeat.apply(&snap, tick);
             let gain = heartbeat_gain(snap.heartbeat_signal);
-            let input_spikes: Vec<f32> =
-                prompt_embedding.iter().map(|value| value * gain).collect();
+            let input_spikes: Vec<f32> = prompt_embedding
+                .iter()
+                .map(|value| value * gain * drive_gain)
+                .collect();
 
             // First/last timestamp bookkeeping. `telemetry_snapshot_for_tick`
             // rewrites timestamps to `tick + 1` for 1-to-1 CSV join but we
@@ -671,6 +675,7 @@ fn run_validation(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_manifest(
     ctx: &RunContext<'_>,
     config: &corinth_canal::model::ModelConfig,

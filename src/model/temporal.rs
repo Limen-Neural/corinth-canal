@@ -146,15 +146,19 @@ impl Model {
                     .map_err(|e| {
                         GpuError::MemoryError(format!("Q8_0 dequantization failed: {e}"))
                     })?;
-                let expected = neuron_count
-                    .checked_mul(neuron_count)
-                    .ok_or_else(|| GpuError::MemoryError("neuron_count² overflows usize".into()))?;
-                if weights.len() == expected {
-                    accelerator.load_synapse_weights_named(&signature, &weights)?;
-                    return Ok(());
-                }
-                // Tensor element count does not match neuron_count²; fall
-                // through to the synthetic-fallback below.
+                let (src_rows, src_cols) = self
+                    .router
+                    .synapse_tensor_row_major_shape(&tensor_name)
+                    .map_err(|e| {
+                        GpuError::MemoryError(format!("synapse tensor shape lookup failed: {e}"))
+                    })?;
+                let final_weights = if src_rows == neuron_count && src_cols == neuron_count {
+                    weights
+                } else {
+                    Self::resample_weights_to_square(&weights, neuron_count, src_rows, src_cols)
+                };
+                accelerator.load_synapse_weights_named(&signature, &final_weights)?;
+                return Ok(());
             } else {
                 return Ok(());
             }
@@ -184,15 +188,19 @@ impl Model {
                     .map_err(|e| {
                         GpuError::MemoryError(format!("Q5_K dequantization failed: {e}"))
                     })?;
-                let expected = neuron_count
-                    .checked_mul(neuron_count)
-                    .ok_or_else(|| GpuError::MemoryError("neuron_count² overflows usize".into()))?;
-                if weights.len() == expected {
-                    accelerator.load_synapse_weights_named(&signature, &weights)?;
-                    return Ok(());
-                }
-                // Tensor element count does not match neuron_count²; fall
-                // through to the synthetic-fallback below.
+                let (src_rows, src_cols) = self
+                    .router
+                    .synapse_tensor_row_major_shape(&tensor_name)
+                    .map_err(|e| {
+                        GpuError::MemoryError(format!("synapse tensor shape lookup failed: {e}"))
+                    })?;
+                let final_weights = if src_rows == neuron_count && src_cols == neuron_count {
+                    weights
+                } else {
+                    Self::resample_weights_to_square(&weights, neuron_count, src_rows, src_cols)
+                };
+                accelerator.load_synapse_weights_named(&signature, &final_weights)?;
+                return Ok(());
             } else {
                 return Ok(());
             }
@@ -206,6 +214,70 @@ impl Model {
         let synthetic_weights = vec![0.0f32; neuron_count * neuron_count];
         accelerator.load_synapse_weights_named(&fallback_signature, &synthetic_weights)?;
         Ok(())
+    }
+
+    /// Resample a non-square weight tensor into a `[neuron_count × neuron_count]`
+    /// matrix using bilinear interpolation over logical rows/columns.
+    ///
+    /// `src_rows` / `src_cols` must match the GGUF tensor layout (row-major:
+    /// `dims[0]` contiguous columns per row, `dims[1]` rows), as produced by the
+    /// checkpoint Q8_0 / Q5_K dequantizers.
+    ///
+    /// GGUF tensors like Gemma4 `[2816, 4096]` or LlamaMoe `[3072, 3072]` don't
+    /// match the SNN's fixed 2048-neuron grid.  Rather than falling through to
+    /// all-zero synthetic weights (which produce zero GIF drive), we resample the
+    /// real weight structure so the neuron population inherits the trained gate
+    /// distribution.
+    fn resample_weights_to_square(
+        src: &[f32],
+        n: usize,
+        src_rows: usize,
+        src_cols: usize,
+    ) -> Vec<f32> {
+        let total = src.len();
+        if total == 0 || n == 0 || src_rows == 0 || src_cols == 0 {
+            return vec![0.0; n * n];
+        }
+
+        let safe_get = |r: usize, c: usize| -> f32 {
+            let idx = r * src_cols + c;
+            if idx < total { src[idx] } else { 0.0 }
+        };
+
+        let mut out = vec![0.0f32; n * n];
+        let row_scale = if n > 1 {
+            (src_rows.saturating_sub(1)) as f64 / (n - 1) as f64
+        } else {
+            0.0
+        };
+        let col_scale = if n > 1 {
+            (src_cols.saturating_sub(1)) as f64 / (n - 1) as f64
+        } else {
+            0.0
+        };
+
+        for r in 0..n {
+            let src_r = r as f64 * row_scale;
+            let r0 = src_r.floor() as usize;
+            let r1 = (r0 + 1).min(src_rows.saturating_sub(1));
+            let tr = (src_r - r0 as f64) as f32;
+            for c in 0..n {
+                let src_c = c as f64 * col_scale;
+                let c0 = src_c.floor() as usize;
+                let c1 = (c0 + 1).min(src_cols.saturating_sub(1));
+                let tc = (src_c - c0 as f64) as f32;
+
+                let v00 = safe_get(r0, c0);
+                let v01 = safe_get(r0, c1);
+                let v10 = safe_get(r1, c0);
+                let v11 = safe_get(r1, c1);
+                out[r * n + c] = v00 * (1.0 - tr) * (1.0 - tc)
+                    + v01 * (1.0 - tr) * tc
+                    + v10 * tr * (1.0 - tc)
+                    + v11 * tr * tc;
+            }
+        }
+        out
     }
 
     pub(super) fn synthetic_activity(
@@ -226,5 +298,24 @@ impl Model {
         let iz_potentials = vec![0.0; IZ_NEURONS];
 
         (spike_train, potentials, iz_potentials)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Model;
+
+    #[test]
+    fn resample_weights_to_square_preserves_square_grid() {
+        let src = vec![0.0, 1.0, 2.0, 3.0];
+        let out = Model::resample_weights_to_square(&src, 2, 2, 2);
+        assert_eq!(out, src);
+    }
+
+    #[test]
+    fn resample_weights_to_square_uses_rectangular_source_shape() {
+        let src = vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+        let out = Model::resample_weights_to_square(&src, 2, 2, 4);
+        assert_eq!(out, vec![0.0, 3.0, 4.0, 7.0]);
     }
 }

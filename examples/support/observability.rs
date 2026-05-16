@@ -283,12 +283,11 @@ pub fn git_sha() -> String {
     if let Ok(output) = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
         .output()
+        && output.status.success()
     {
-        if output.status.success() {
-            let sha = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            if !sha.is_empty() {
-                return sha;
-            }
+        let sha = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if !sha.is_empty() {
+            return sha;
         }
     }
     "unknown".to_owned()

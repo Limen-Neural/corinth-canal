@@ -147,79 +147,142 @@ pub fn heartbeat_modes_for_matrix() -> Vec<bool> {
 }
 
 #[allow(dead_code)]
-pub fn prompt_embedding_for_validation(
-    model_path: &str,
-    prompt_text: &str,
-    target_dim: usize,
-) -> Result<(Vec<f32>, String), Box<dyn std::error::Error>> {
-    match pooled_prompt_embedding_from_llama_cpp(model_path, prompt_text, target_dim) {
-        Ok(embedding) => Ok((embedding, "llama_cpp_mean_pool".into())),
-        Err(error) => {
-            eprintln!(
-                "llama.cpp prompt embedding unavailable for '{}': {}. Falling back to deterministic text hash embedding.",
-                model_path, error
-            );
-            Ok((
-                synthetic_text_embedding(prompt_text, target_dim),
-                "text_hash_fallback".into(),
-            ))
-        }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptEmbeddingProvider {
+    Ollama,
+    SyntheticFallback,
+}
+
+fn resolve_prompt_embedding_provider(value: Option<&str>) -> PromptEmbeddingProvider {
+    match value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        None | Some("ollama") => PromptEmbeddingProvider::Ollama,
+        _ => PromptEmbeddingProvider::SyntheticFallback,
     }
 }
 
 #[allow(dead_code)]
-pub fn pooled_prompt_embedding_from_llama_cpp(
-    model_path: &str,
+pub fn prompt_embedding_for_validation(
     prompt_text: &str,
     target_dim: usize,
-) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
-    let binary = llama_embedding_binary()?;
-    let output = Command::new(binary)
-        .arg("-m")
-        .arg(model_path)
-        .arg("-p")
-        .arg(prompt_text)
-        .arg("--pooling")
-        .arg("mean")
-        .arg("--no-warmup")
-        .arg("--embd-output-format")
-        .arg("json")
-        .arg("-n")
-        .arg("0")
-        .arg("-ngl")
-        .arg("0")
+) -> Result<(Vec<f32>, String), Box<dyn std::error::Error>> {
+    let provider = std::env::var("EMBEDDING_PROVIDER").ok();
+
+    if resolve_prompt_embedding_provider(provider.as_deref()) == PromptEmbeddingProvider::Ollama {
+        match pooled_prompt_embedding_from_ollama(prompt_text, target_dim) {
+            Ok((embedding, label)) => return Ok((embedding, label)),
+            Err(error) => {
+                eprintln!(
+                    "Ollama prompt embedding unavailable: {}. Falling back to deterministic text hash embedding.",
+                    error
+                );
+            }
+        }
+    } else {
+        eprintln!(
+            "Unknown embedding provider '{}'. Falling back to deterministic text hash embedding.",
+            provider.as_deref().unwrap_or("<unset>")
+        );
+    }
+
+    Ok((
+        synthetic_text_embedding(prompt_text, target_dim),
+        "text_hash_fallback".into(),
+    ))
+}
+
+#[allow(dead_code)]
+pub fn pooled_prompt_embedding_from_ollama(
+    prompt_text: &str,
+    target_dim: usize,
+) -> Result<(Vec<f32>, String), Box<dyn std::error::Error>> {
+    let model =
+        std::env::var("OLLAMA_EMBED_MODEL").unwrap_or_else(|_| "nomic-embed-text".to_string());
+    let url = std::env::var("OLLAMA_EMBED_URL")
+        .unwrap_or_else(|_| "http://localhost:11434/api/embed".to_string());
+    let prefix =
+        std::env::var("OLLAMA_EMBED_PREFIX").unwrap_or_else(|_| "classification: ".to_string());
+
+    let input = format!("{}{}", prefix, prompt_text);
+    let payload = serde_json::json!({
+        "model": model,
+        "input": input,
+    });
+    let payload_str = serde_json::to_string(&payload)?;
+
+    let output = Command::new("curl")
+        .arg("--fail-with-body")
+        .arg("--silent")
+        .arg("--show-error")
+        .arg("--connect-timeout")
+        .arg("5")
+        .arg("--max-time")
+        .arg("30")
+        .arg("-X")
+        .arg("POST")
+        .arg(&url)
+        .arg("-H")
+        .arg("Content-Type: application/json")
+        .arg("-d")
+        .arg(&payload_str)
         .output()?;
 
     if !output.status.success() {
-        return Err(Error::other(format!(
-            "llama-embedding failed for '{model_path}': {}",
-            String::from_utf8_lossy(&output.stderr)
-        ))
-        .into());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let detail = match (stderr.trim(), stdout.trim()) {
+            ("", "") => format!("exit status {}", output.status),
+            (stderr, "") => stderr.to_owned(),
+            ("", stdout) => stdout.to_owned(),
+            (stderr, stdout) => format!("{stderr}; response: {stdout}"),
+        };
+        return Err(Error::other(format!("Ollama curl request failed: {detail}")).into());
     }
 
     let stdout = String::from_utf8(output.stdout)?;
-    let mut embedding = parse_llama_embedding_payload(&stdout)?;
+
+    #[derive(serde::Deserialize)]
+    struct OllamaResponse {
+        embeddings: Option<Vec<Vec<f32>>>,
+    }
+
+    let response: OllamaResponse = serde_json::from_str(&stdout).map_err(|e| {
+        Error::other(format!(
+            "Failed to parse Ollama response: {e}\nResponse: {stdout}"
+        ))
+    })?;
+
+    let mut embedding = response
+        .embeddings
+        .and_then(|mut embs| embs.pop())
+        .ok_or_else(|| Error::other("Ollama response did not contain embeddings"))?;
+
     if embedding.len() != target_dim {
         embedding = resample_embedding(&embedding, target_dim);
     }
     normalize_embedding(&mut embedding);
-    Ok(embedding)
+
+    let label = format!("ollama:{}", model);
+    Ok((embedding, label))
 }
 
 pub fn discover_validation_models() -> Vec<ValidationModelSpec> {
-    if let Ok(path) = std::env::var("GGUF_CHECKPOINT_PATH") {
-        if !path.trim().is_empty() {
-            let family = OlmoeRouter::probe_model(&path, None)
-                .ok()
-                .map(|metadata| metadata.family);
-            return vec![ValidationModelSpec {
-                slug: slug_from_path(&path),
-                family,
-                path,
-                routing_mode: None,
-            }];
-        }
+    if let Ok(path) = std::env::var("GGUF_CHECKPOINT_PATH")
+        && !path.trim().is_empty()
+    {
+        let family = OlmoeRouter::probe_model(&path, None)
+            .ok()
+            .map(|metadata| metadata.family);
+        return vec![ValidationModelSpec {
+            slug: slug_from_path(&path),
+            family,
+            path,
+            routing_mode: None,
+        }];
     }
 
     let Some(home) = std::env::var_os("HOME") else {
@@ -547,26 +610,18 @@ pub fn heartbeat_gain(signal: f32) -> f32 {
     (1.0 + signal * 0.28).max(0.15)
 }
 
+/// Scale factor applied to the prompt embedding before GPU temporal upload.
+///
+/// L2-normalised 2048-dim embeddings have per-element magnitude ≈ 0.022.
+/// The GIF kernel's `GIF_DRIVE_SCALE=0.75` and `GIF_THRESHOLD_BASE=0.65`
+/// require effective drive ≥ ~0.87 per tick to fire.  A gain of 32 lifts
+/// per-element input from ~0.022 to ~0.7, producing dot-product drives that
+/// comfortably cross threshold and yield healthy 5–15 % firing rates.
+///
+/// Override via `INPUT_DRIVE_GAIN` env var for per-model tuning.
 #[allow(dead_code)]
-fn llama_embedding_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    llama_embedding_binary_optional().ok_or_else(|| {
-        Error::other("LLAMA_EMBEDDING_BIN must point to llama.cpp's llama-embedding binary").into()
-    })
-}
-
-/// Non-erroring variant used by [`RunConfig::from_env`]: returns `None`
-/// when neither `LLAMA_EMBEDDING_BIN` nor the author's local build path is
-/// present. Callers that actually need the binary (e.g. prompt-embedding
-/// generation) should still go through [`llama_embedding_binary`].
-pub fn llama_embedding_binary_optional() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("LLAMA_EMBEDDING_BIN") {
-        let binary = PathBuf::from(path);
-        if binary.exists() {
-            return Some(binary);
-        }
-    }
-
-    None
+pub fn input_drive_gain_from_env() -> f32 {
+    env_f32("INPUT_DRIVE_GAIN", 32.0)
 }
 
 /// Parse `ROUTING_MODE` into a [`RoutingMode`]. Returns `None` when the env
@@ -579,33 +634,6 @@ pub fn routing_mode_override_from_env() -> Option<RoutingMode> {
         "spiking" | "spiking_sim" => Some(RoutingMode::SpikingSim),
         _ => None,
     }
-}
-
-#[allow(dead_code)]
-fn parse_llama_embedding_payload(stdout: &str) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
-    #[derive(serde::Deserialize)]
-    struct JsonEmbeddingRow {
-        embedding: Vec<f32>,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct JsonEmbeddingList {
-        data: Vec<JsonEmbeddingRow>,
-    }
-
-    if let Ok(payload) = serde_json::from_str::<JsonEmbeddingList>(stdout) {
-        if let Some(row) = payload.data.into_iter().next() {
-            return Ok(row.embedding);
-        }
-    }
-
-    if let Ok(payload) = serde_json::from_str::<Vec<Vec<f32>>>(stdout) {
-        if let Some(row) = payload.into_iter().next() {
-            return Ok(row);
-        }
-    }
-
-    Err(Error::other("llama-embedding output did not contain a JSON embedding payload").into())
 }
 
 fn slug_from_path(path: &str) -> String {
@@ -838,6 +866,30 @@ mod tests {
         assert_eq!(
             csv_source_label(Path::new("/tmp/cyberpunk2077_combat.csv")),
             "csv_cyberpunk2077_combat"
+        );
+    }
+
+    #[test]
+    fn prompt_embedding_provider_defaults_to_ollama() {
+        assert_eq!(
+            resolve_prompt_embedding_provider(None),
+            PromptEmbeddingProvider::Ollama
+        );
+    }
+
+    #[test]
+    fn prompt_embedding_provider_accepts_ollama_case_insensitively() {
+        assert_eq!(
+            resolve_prompt_embedding_provider(Some("  OLLAMA  ")),
+            PromptEmbeddingProvider::Ollama
+        );
+    }
+
+    #[test]
+    fn prompt_embedding_provider_rejects_legacy_llama_cpp() {
+        assert_eq!(
+            resolve_prompt_embedding_provider(Some("llama_cpp")),
+            PromptEmbeddingProvider::SyntheticFallback
         );
     }
 }
