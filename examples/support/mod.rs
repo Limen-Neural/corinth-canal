@@ -547,6 +547,20 @@ pub fn heartbeat_gain(signal: f32) -> f32 {
     (1.0 + signal * 0.28).max(0.15)
 }
 
+/// Scale factor applied to the prompt embedding before GPU temporal upload.
+///
+/// L2-normalised 2048-dim embeddings have per-element magnitude ≈ 0.022.
+/// The GIF kernel's `GIF_DRIVE_SCALE=0.75` and `GIF_THRESHOLD_BASE=0.65`
+/// require effective drive ≥ ~0.87 per tick to fire.  A gain of 32 lifts
+/// per-element input from ~0.022 to ~0.7, producing dot-product drives that
+/// comfortably cross threshold and yield healthy 5–15 % firing rates.
+///
+/// Override via `INPUT_DRIVE_GAIN` env var for per-model tuning.
+#[allow(dead_code)]
+pub fn input_drive_gain_from_env() -> f32 {
+    env_f32("INPUT_DRIVE_GAIN", 32.0)
+}
+
 #[allow(dead_code)]
 fn llama_embedding_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
     llama_embedding_binary_optional().ok_or_else(|| {

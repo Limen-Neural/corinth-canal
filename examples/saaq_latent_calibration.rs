@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use support::{
     ResolvedTelemetry, RunConfig, TelemetrySource, ValidationModelSpec,
-    default_spiking_model_config, heartbeat_gain,
+    default_spiking_model_config, heartbeat_gain, input_drive_gain_from_env,
     observability::{self, CommandObserver, SafeDiagnosticData},
     prompt_embedding_for_validation, telemetry_snapshot_for_tick,
 };
@@ -488,7 +488,7 @@ fn run_validation(
     let heartbeat = HeartbeatInjector::new(config.heartbeat.clone());
 
     println!(
-        "validation_start model_slug={} family={:?} architecture={} heartbeat_enabled={} ticks={} repeat={}/{} routing_tensor={} synapse_source={} telemetry_source={}",
+        "validation_start model_slug={} family={:?} architecture={} heartbeat_enabled={} ticks={} repeat={}/{} routing_tensor={} synapse_source={} telemetry_source={} input_drive_gain={:.1}",
         ctx.spec.slug,
         model.router_family(),
         model.router_architecture(),
@@ -499,17 +499,21 @@ fn run_validation(
         model.routing_tensor_name(),
         model.synapse_source(),
         ctx.resolved.source_label,
+        input_drive_gain_from_env(),
     );
 
     let mut elapsed_sum_us: u128 = 0;
     let mut elapsed_count: usize = 0;
+    let drive_gain = input_drive_gain_from_env();
     let run_result = (|| -> Result<(), Box<dyn std::error::Error>> {
         for tick in 0..ctx.ticks {
             let snap = telemetry_snapshot_for_tick(tick, ctx.resolved);
             let snap = heartbeat.apply(&snap, tick);
             let gain = heartbeat_gain(snap.heartbeat_signal);
-            let input_spikes: Vec<f32> =
-                prompt_embedding.iter().map(|value| value * gain).collect();
+            let input_spikes: Vec<f32> = prompt_embedding
+                .iter()
+                .map(|value| value * gain * drive_gain)
+                .collect();
 
             // First/last timestamp bookkeeping. `telemetry_snapshot_for_tick`
             // rewrites timestamps to `tick + 1` for 1-to-1 CSV join but we
