@@ -9,9 +9,9 @@ mod adapter;
 mod checkpoint;
 mod routing;
 
-use self::adapter::{resolve_adapter, ModelAdapter, SynapseSource};
+use self::adapter::{ModelAdapter, SynapseSource, resolve_adapter};
 use self::checkpoint::{
-    extract_named_token_embedding_from_checkpoint, probe_and_map_checkpoint, MappedGgufCheckpoint,
+    MappedGgufCheckpoint, extract_named_token_embedding_from_checkpoint, probe_and_map_checkpoint,
 };
 use self::routing::{
     checkpoint_gate_scores, normalize_l2, normalize_to_internal_embedding_dim, resample_embedding,
@@ -19,7 +19,7 @@ use self::routing::{
 };
 use crate::error::{HybridError, Result};
 pub use crate::types::RoutingMode;
-use crate::types::{ModelFamily, EMBEDDING_DIM};
+use crate::types::{EMBEDDING_DIM, ModelFamily};
 
 pub(super) const GGUF_MAGIC: [u8; 4] = [b'G', b'G', b'U', b'F'];
 pub(super) const GGUF_VERSION: u32 = 3;
