@@ -192,10 +192,13 @@ pub fn pooled_prompt_embedding_from_ollama(
     prompt_text: &str,
     target_dim: usize,
 ) -> Result<(Vec<f32>, String), Box<dyn std::error::Error>> {
-    let model = std::env::var("OLLAMA_EMBED_MODEL").unwrap_or_else(|_| "nomic-embed-text".to_string());
-    let url = std::env::var("OLLAMA_EMBED_URL").unwrap_or_else(|_| "http://localhost:11434/api/embed".to_string());
-    let prefix = std::env::var("OLLAMA_EMBED_PREFIX").unwrap_or_else(|_| "classification: ".to_string());
-    
+    let model =
+        std::env::var("OLLAMA_EMBED_MODEL").unwrap_or_else(|_| "nomic-embed-text".to_string());
+    let url = std::env::var("OLLAMA_EMBED_URL")
+        .unwrap_or_else(|_| "http://localhost:11434/api/embed".to_string());
+    let prefix =
+        std::env::var("OLLAMA_EMBED_PREFIX").unwrap_or_else(|_| "classification: ".to_string());
+
     let input = format!("{}{}", prefix, prompt_text);
     let payload = serde_json::json!({
         "model": model,
@@ -204,8 +207,13 @@ pub fn pooled_prompt_embedding_from_ollama(
     let payload_str = serde_json::to_string(&payload)?;
 
     let output = Command::new("curl")
-        .arg("-s")
-        .arg("--fail")
+        .arg("--fail-with-body")
+        .arg("--silent")
+        .arg("--show-error")
+        .arg("--connect-timeout")
+        .arg("5")
+        .arg("--max-time")
+        .arg("30")
         .arg("-X")
         .arg("POST")
         .arg(&url)
@@ -216,11 +224,15 @@ pub fn pooled_prompt_embedding_from_ollama(
         .output()?;
 
     if !output.status.success() {
-        return Err(Error::other(format!(
-            "Ollama curl request failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ))
-        .into());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let detail = match (stderr.trim(), stdout.trim()) {
+            ("", "") => format!("exit status {}", output.status),
+            (stderr, "") => stderr.to_owned(),
+            ("", stdout) => stdout.to_owned(),
+            (stderr, stdout) => format!("{stderr}; response: {stdout}"),
+        };
+        return Err(Error::other(format!("Ollama curl request failed: {detail}")).into());
     }
 
     let stdout = String::from_utf8(output.stdout)?;
@@ -231,7 +243,9 @@ pub fn pooled_prompt_embedding_from_ollama(
     }
 
     let response: OllamaResponse = serde_json::from_str(&stdout).map_err(|e| {
-        Error::other(format!("Failed to parse Ollama response: {e}\nResponse: {stdout}"))
+        Error::other(format!(
+            "Failed to parse Ollama response: {e}\nResponse: {stdout}"
+        ))
     })?;
 
     let mut embedding = response
