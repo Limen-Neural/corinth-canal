@@ -487,6 +487,7 @@ fn run_validation(
     let mut calibrator = SnnDualLatentCalibrator::new(saaq_rule);
     let heartbeat = HeartbeatInjector::new(config.heartbeat.clone());
 
+    let drive_gain = input_drive_gain_from_env();
     println!(
         "validation_start model_slug={} family={:?} architecture={} heartbeat_enabled={} ticks={} repeat={}/{} routing_tensor={} synapse_source={} telemetry_source={} input_drive_gain={:.1}",
         ctx.spec.slug,
@@ -499,12 +500,11 @@ fn run_validation(
         model.routing_tensor_name(),
         model.synapse_source(),
         ctx.resolved.source_label,
-        input_drive_gain_from_env(),
+        drive_gain,
     );
 
     let mut elapsed_sum_us: u128 = 0;
     let mut elapsed_count: usize = 0;
-    let drive_gain = input_drive_gain_from_env();
     let run_result = (|| -> Result<(), Box<dyn std::error::Error>> {
         for tick in 0..ctx.ticks {
             let snap = telemetry_snapshot_for_tick(tick, ctx.resolved);

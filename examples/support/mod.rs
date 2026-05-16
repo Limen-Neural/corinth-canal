@@ -205,6 +205,7 @@ pub fn pooled_prompt_embedding_from_ollama(
 
     let output = Command::new("curl")
         .arg("-s")
+        .arg("--fail")
         .arg("-X")
         .arg("POST")
         .arg(&url)
