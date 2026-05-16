@@ -388,13 +388,16 @@ where `<run_id>` = `<YYYYMMDDTHHMMSS>_<prompt_slug>_r<repeat_idx>` (UTC, sortabl
 | `TELEMETRY_SOURCE` | `synthetic` | `synthetic` runs the in-process sinusoid; `csv` replays a canonical telemetry CSV. Must be set explicitly to `csv` for real-corpus runs — defaults are dependency-light on purpose. |
 | `TELEMETRY_CSV_PATH` | _(unset)_ | Canonical-format CSV (`timestamp_ms,gpu_temp_c,gpu_power_w,cpu_tctl_c,cpu_package_power_w`). Required when `TELEMETRY_SOURCE=csv`. Missing/malformed → fallback to synthetic, stamped `synthetic_fallback` in the manifest. |
 | `TICKS` | `512` | Per-run tick count. Special case: when `TICKS=0` *and* `TELEMETRY_SOURCE=csv`, uses the exact CSV row count so a SymbolicRegression.jl corpus run covers exactly one loop with zero wraparound contamination. |
-| `REPEAT_COUNT` | `1` | Number of repeats per (model, telemetry, heartbeat) tuple. Deterministic inputs mean repeats should bit-match — divergence indicates scheduler noise. |
+| `REPEAT_COUNT` | `1` | Number of repeats per (model, telemetry, heartbeat) tuple. Deterministic inputs mean repeats should bit-match — divergence indicates sc
+heduler noise. |
 | `VALIDATION_OUTPUT_ROOT` | `./artifacts` | Top of the per-run output tree. Repo-relative by default; set to an absolute path to redirect runs into an external consumer. |
 | `HEARTBEAT_MATRIX` | `off,on` | Kept as-is for this round; amplitude/period sweep is future work. |
 | `SAAQ_RULE` | `saaq_v1_5` | Selects which rule fills the legacy `saaq_delta_q_{prev,target}` columns. Both rules are always emitted in the dual-SAAQ columns regardless. |
 | `LINEUP_CONFIG` | _(unset)_ | Optional path to a TOML file (e.g. `configs/saaq15_moe_lineup.toml`) specifying a lineup of GGUF checkpoints to sweep. Takes precedence over `GGUF_CHECKPOINT_PATH` and autodiscovery. |
-| `RUN_TAG` | _(unset)_ | Optional tag to append to the generated `run_id` (e.g. producing `YYYYMMDDTHHMMSS_prompt_r0_tag`). |
+| `RUN_TAG` | _(unset)
+_ | Optional tag to append to the generated `run_id` (e.g. producing `YYYYMMDDTHHMMSS_prompt_r0_tag`). |
 | `STRICT_REPEAT_CHECK` | `false` | When true, strict bit-for-bit CSV comparison is performed across all repeats in a group. Mismatches are flagged in `summary.json`. |
+
 
 #### Wraparound hygiene
 
@@ -452,6 +455,7 @@ TELEMETRY_SOURCE=csv TICKS=0 REPEAT_COUNT=1 HEARTBEAT_MATRIX=off \
 ```
 
 Repeatability check (3 runs per model per heartbeat, deterministic inputs):
+
 
 ```bash
 TELEMETRY_SOURCE=csv TICKS=0 REPEAT_COUNT=3 \
