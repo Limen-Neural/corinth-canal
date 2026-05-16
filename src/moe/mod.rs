@@ -1079,6 +1079,105 @@ mod tests {
     }
 
     #[test]
+    fn test_synapse_tensor_row_major_shape_reports_q8_0_dims() {
+        let gate_payload = vec![0u8; EMBEDDING_DIM * 64 * size_of::<f32>()];
+        let path = write_temp_file(&build_q8_0_synapse_checkpoint(gate_payload), "q8-0-shape");
+
+        let model =
+            OlmoeRouter::load_with_mode(path.to_str().unwrap(), 0, 0, RoutingMode::StubUniform)
+                .unwrap();
+
+        let shape = model
+            .synapse_tensor_row_major_shape("blk.0.attn_q.weight")
+            .expect("Q8_0 synapse tensor shape must be readable");
+        assert_eq!(shape, (EMBEDDING_DIM, EMBEDDING_DIM));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_synapse_tensor_row_major_shape_uses_one_row_for_rank_one_tensor() {
+        let gate_payload = vec![0u8; EMBEDDING_DIM * 64 * size_of::<f32>()];
+        let checkpoint = build_test_gguf(
+            vec![
+                (
+                    "blk.0.ffn_gate_inp.weight",
+                    vec![EMBEDDING_DIM, 64],
+                    GGML_TYPE_F32,
+                    gate_payload,
+                ),
+                (
+                    "blk.0.attn_q.weight",
+                    vec![EMBEDDING_DIM, EMBEDDING_DIM],
+                    GGML_TYPE_F16,
+                    vec![0u8; EMBEDDING_DIM * EMBEDDING_DIM * 2],
+                ),
+                (
+                    "token_embd.weight",
+                    vec![EMBEDDING_DIM, 32],
+                    GGML_TYPE_F16,
+                    vec![0u8; EMBEDDING_DIM * 32 * 2],
+                ),
+                ("rank1.tensor", vec![7], GGML_TYPE_F16, vec![0u8; 7 * 2]),
+            ],
+            32,
+        );
+        let path = write_temp_file(&checkpoint, "rank-1-shape");
+
+        let model =
+            OlmoeRouter::load_with_mode(path.to_str().unwrap(), 0, 0, RoutingMode::StubUniform)
+                .unwrap();
+
+        let shape = model
+            .synapse_tensor_row_major_shape("rank1.tensor")
+            .expect("rank-1 tensor shape must be readable");
+        assert_eq!(shape, (1, 7));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_synapse_tensor_row_major_shape_rejects_zero_dim_tensor() {
+        let gate_payload = vec![0u8; EMBEDDING_DIM * 64 * size_of::<f32>()];
+        let checkpoint = build_test_gguf(
+            vec![
+                (
+                    "blk.0.ffn_gate_inp.weight",
+                    vec![EMBEDDING_DIM, 64],
+                    GGML_TYPE_F32,
+                    gate_payload,
+                ),
+                (
+                    "blk.0.attn_q.weight",
+                    vec![EMBEDDING_DIM, EMBEDDING_DIM],
+                    GGML_TYPE_F16,
+                    vec![0u8; EMBEDDING_DIM * EMBEDDING_DIM * 2],
+                ),
+                (
+                    "token_embd.weight",
+                    vec![EMBEDDING_DIM, 32],
+                    GGML_TYPE_F16,
+                    vec![0u8; EMBEDDING_DIM * 32 * 2],
+                ),
+                ("zero-dim.tensor", vec![], GGML_TYPE_F16, Vec::new()),
+            ],
+            32,
+        );
+        let path = write_temp_file(&checkpoint, "zero-dim-shape");
+
+        let model =
+            OlmoeRouter::load_with_mode(path.to_str().unwrap(), 0, 0, RoutingMode::StubUniform)
+                .unwrap();
+
+        let err = model
+            .synapse_tensor_row_major_shape("zero-dim.tensor")
+            .expect_err("zero-dim tensor must be rejected");
+        assert!(matches!(err, HybridError::UnsupportedFormat(_)));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn test_preferred_synapse_descriptor_q5_k_has_dequant_path() {
         let gate_payload = vec![0u8; EMBEDDING_DIM * 64 * size_of::<f32>()];
         let path = write_temp_file(
@@ -1175,6 +1274,15 @@ mod tests {
         assert_eq!(weights[255], 1.0_f32, "element 255 should be 1.0");
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_synapse_tensor_row_major_shape_requires_checkpoint() {
+        let model = stub();
+        let err = model
+            .synapse_tensor_row_major_shape("blk.0.attn_q.weight")
+            .expect_err("stub router must not expose checkpoint-backed tensor shapes");
+        assert!(matches!(err, HybridError::ModelLoad { .. }));
     }
 
     #[test]
