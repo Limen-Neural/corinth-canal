@@ -303,18 +303,18 @@ pub fn pooled_prompt_embedding_from_llama_cpp(
 }
 
 pub fn discover_validation_models() -> Vec<ValidationModelSpec> {
-    if let Ok(path) = std::env::var("GGUF_CHECKPOINT_PATH") {
-        if !path.trim().is_empty() {
-            let family = OlmoeRouter::probe_model(&path, None)
-                .ok()
-                .map(|metadata| metadata.family);
-            return vec![ValidationModelSpec {
-                slug: slug_from_path(&path),
-                family,
-                path,
-                routing_mode: None,
-            }];
-        }
+    if let Ok(path) = std::env::var("GGUF_CHECKPOINT_PATH")
+        && !path.trim().is_empty()
+    {
+        let family = OlmoeRouter::probe_model(&path, None)
+            .ok()
+            .map(|metadata| metadata.family);
+        return vec![ValidationModelSpec {
+            slug: slug_from_path(&path),
+            family,
+            path,
+            routing_mode: None,
+        }];
     }
 
     let Some(home) = std::env::var_os("HOME") else {
@@ -702,16 +702,16 @@ fn parse_llama_embedding_payload(stdout: &str) -> Result<Vec<f32>, Box<dyn std::
         data: Vec<JsonEmbeddingRow>,
     }
 
-    if let Ok(payload) = serde_json::from_str::<JsonEmbeddingList>(stdout) {
-        if let Some(row) = payload.data.into_iter().next() {
-            return Ok(row.embedding);
-        }
+    if let Ok(payload) = serde_json::from_str::<JsonEmbeddingList>(stdout)
+        && let Some(row) = payload.data.into_iter().next()
+    {
+        return Ok(row.embedding);
     }
 
-    if let Ok(payload) = serde_json::from_str::<Vec<Vec<f32>>>(stdout) {
-        if let Some(row) = payload.into_iter().next() {
-            return Ok(row);
-        }
+    if let Ok(payload) = serde_json::from_str::<Vec<Vec<f32>>>(stdout)
+        && let Some(row) = payload.into_iter().next()
+    {
+        return Ok(row);
     }
 
     Err(Error::other("llama-embedding output did not contain a JSON embedding payload").into())

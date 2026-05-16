@@ -210,12 +210,12 @@ fn run_main(observer: &CommandObserver) -> Result<(), Box<dyn std::error::Error>
         (other, _, _) => other,
     };
 
-    if let Some(rows) = cfg.telemetry.row_count() {
-        if effective_ticks > rows {
-            eprintln!(
-                "wraparound: ticks={effective_ticks} > rows={rows}; regression corpus may be contaminated by looped endings. Prefer TICKS=0 or TICKS<={rows}.",
-            );
-        }
+    if let Some(rows) = cfg.telemetry.row_count()
+        && effective_ticks > rows
+    {
+        eprintln!(
+            "wraparound: ticks={effective_ticks} > rows={rows}; regression corpus may be contaminated by looped endings. Prefer TICKS=0 or TICKS<={rows}.",
+        );
     }
 
     println!(
@@ -675,6 +675,7 @@ fn run_validation(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_manifest(
     ctx: &RunContext<'_>,
     config: &corinth_canal::model::ModelConfig,
