@@ -152,19 +152,99 @@ pub fn prompt_embedding_for_validation(
     prompt_text: &str,
     target_dim: usize,
 ) -> Result<(Vec<f32>, String), Box<dyn std::error::Error>> {
-    match pooled_prompt_embedding_from_llama_cpp(model_path, prompt_text, target_dim) {
-        Ok(embedding) => Ok((embedding, "llama_cpp_mean_pool".into())),
-        Err(error) => {
-            eprintln!(
-                "llama.cpp prompt embedding unavailable for '{}': {}. Falling back to deterministic text hash embedding.",
-                model_path, error
-            );
-            Ok((
-                synthetic_text_embedding(prompt_text, target_dim),
-                "text_hash_fallback".into(),
-            ))
+    let provider = std::env::var("EMBEDDING_PROVIDER").unwrap_or_else(|_| "llama_cpp".to_string());
+
+    if provider == "ollama" {
+        match pooled_prompt_embedding_from_ollama(prompt_text, target_dim) {
+            Ok((embedding, label)) => return Ok((embedding, label)),
+            Err(error) => {
+                eprintln!(
+                    "Ollama prompt embedding unavailable: {}. Falling back to deterministic text hash embedding.",
+                    error
+                );
+            }
         }
+    } else if provider == "llama_cpp" {
+        match pooled_prompt_embedding_from_llama_cpp(model_path, prompt_text, target_dim) {
+            Ok(embedding) => return Ok((embedding, "llama_cpp_mean_pool".into())),
+            Err(error) => {
+                eprintln!(
+                    "llama.cpp prompt embedding unavailable for '{}': {}. Falling back to deterministic text hash embedding.",
+                    model_path, error
+                );
+            }
+        }
+    } else {
+        eprintln!(
+            "Unknown embedding provider '{}'. Falling back to deterministic text hash embedding.",
+            provider
+        );
     }
+
+    Ok((
+        synthetic_text_embedding(prompt_text, target_dim),
+        "text_hash_fallback".into(),
+    ))
+}
+
+#[allow(dead_code)]
+pub fn pooled_prompt_embedding_from_ollama(
+    prompt_text: &str,
+    target_dim: usize,
+) -> Result<(Vec<f32>, String), Box<dyn std::error::Error>> {
+    let model = std::env::var("OLLAMA_EMBED_MODEL").unwrap_or_else(|_| "nomic-embed-text".to_string());
+    let url = std::env::var("OLLAMA_EMBED_URL").unwrap_or_else(|_| "http://localhost:11434/api/embed".to_string());
+    let prefix = std::env::var("OLLAMA_EMBED_PREFIX").unwrap_or_else(|_| "classification: ".to_string());
+    
+    let input = format!("{}{}", prefix, prompt_text);
+    let payload = serde_json::json!({
+        "model": model,
+        "input": input,
+    });
+    let payload_str = serde_json::to_string(&payload)?;
+
+    let output = Command::new("curl")
+        .arg("-s")
+        .arg("-X")
+        .arg("POST")
+        .arg(&url)
+        .arg("-H")
+        .arg("Content-Type: application/json")
+        .arg("-d")
+        .arg(&payload_str)
+        .output()?;
+
+    if !output.status.success() {
+        return Err(Error::other(format!(
+            "Ollama curl request failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
+        .into());
+    }
+
+    let stdout = String::from_utf8(output.stdout)?;
+
+    #[derive(serde::Deserialize)]
+    struct OllamaResponse {
+        embeddings: Option<Vec<Vec<f32>>>,
+    }
+
+    let response: OllamaResponse = serde_json::from_str(&stdout).map_err(|e| {
+        Error::other(format!("Failed to parse Ollama response: {e}\nResponse: {stdout}"))
+    })?;
+
+    let mut embedding = response
+        .embeddings
+        .and_then(|mut embs| embs.pop())
+        .ok_or_else(|| Error::other("Ollama response did not contain embeddings"))?;
+
+    if embedding.len() != target_dim {
+        embedding = resample_embedding(&embedding, target_dim);
+    }
+    normalize_embedding(&mut embedding);
+
+    let label = format!("ollama:{}", model);
+    Ok((embedding, label))
 }
 
 #[allow(dead_code)]
