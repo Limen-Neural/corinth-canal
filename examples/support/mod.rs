@@ -147,14 +147,32 @@ pub fn heartbeat_modes_for_matrix() -> Vec<bool> {
 }
 
 #[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptEmbeddingProvider {
+    Ollama,
+    SyntheticFallback,
+}
+
+fn resolve_prompt_embedding_provider(value: Option<&str>) -> PromptEmbeddingProvider {
+    match value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        None | Some("ollama") => PromptEmbeddingProvider::Ollama,
+        _ => PromptEmbeddingProvider::SyntheticFallback,
+    }
+}
+
+#[allow(dead_code)]
 pub fn prompt_embedding_for_validation(
-    model_path: &str,
     prompt_text: &str,
     target_dim: usize,
 ) -> Result<(Vec<f32>, String), Box<dyn std::error::Error>> {
-    let provider = std::env::var("EMBEDDING_PROVIDER").unwrap_or_else(|_| "llama_cpp".to_string());
+    let provider = std::env::var("EMBEDDING_PROVIDER").ok();
 
-    if provider == "ollama" {
+    if resolve_prompt_embedding_provider(provider.as_deref()) == PromptEmbeddingProvider::Ollama {
         match pooled_prompt_embedding_from_ollama(prompt_text, target_dim) {
             Ok((embedding, label)) => return Ok((embedding, label)),
             Err(error) => {
@@ -164,20 +182,10 @@ pub fn prompt_embedding_for_validation(
                 );
             }
         }
-    } else if provider == "llama_cpp" {
-        match pooled_prompt_embedding_from_llama_cpp(model_path, prompt_text, target_dim) {
-            Ok(embedding) => return Ok((embedding, "llama_cpp_mean_pool".into())),
-            Err(error) => {
-                eprintln!(
-                    "llama.cpp prompt embedding unavailable for '{}': {}. Falling back to deterministic text hash embedding.",
-                    model_path, error
-                );
-            }
-        }
     } else {
         eprintln!(
             "Unknown embedding provider '{}'. Falling back to deterministic text hash embedding.",
-            provider
+            provider.as_deref().unwrap_or("<unset>")
         );
     }
 
@@ -260,46 +268,6 @@ pub fn pooled_prompt_embedding_from_ollama(
 
     let label = format!("ollama:{}", model);
     Ok((embedding, label))
-}
-
-#[allow(dead_code)]
-pub fn pooled_prompt_embedding_from_llama_cpp(
-    model_path: &str,
-    prompt_text: &str,
-    target_dim: usize,
-) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
-    let binary = llama_embedding_binary()?;
-    let output = Command::new(binary)
-        .arg("-m")
-        .arg(model_path)
-        .arg("-p")
-        .arg(prompt_text)
-        .arg("--pooling")
-        .arg("mean")
-        .arg("--no-warmup")
-        .arg("--embd-output-format")
-        .arg("json")
-        .arg("-n")
-        .arg("0")
-        .arg("-ngl")
-        .arg("0")
-        .output()?;
-
-    if !output.status.success() {
-        return Err(Error::other(format!(
-            "llama-embedding failed for '{model_path}': {}",
-            String::from_utf8_lossy(&output.stderr)
-        ))
-        .into());
-    }
-
-    let stdout = String::from_utf8(output.stdout)?;
-    let mut embedding = parse_llama_embedding_payload(&stdout)?;
-    if embedding.len() != target_dim {
-        embedding = resample_embedding(&embedding, target_dim);
-    }
-    normalize_embedding(&mut embedding);
-    Ok(embedding)
 }
 
 pub fn discover_validation_models() -> Vec<ValidationModelSpec> {
@@ -656,28 +624,6 @@ pub fn input_drive_gain_from_env() -> f32 {
     env_f32("INPUT_DRIVE_GAIN", 32.0)
 }
 
-#[allow(dead_code)]
-fn llama_embedding_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    llama_embedding_binary_optional().ok_or_else(|| {
-        Error::other("LLAMA_EMBEDDING_BIN must point to llama.cpp's llama-embedding binary").into()
-    })
-}
-
-/// Non-erroring variant used by [`RunConfig::from_env`]: returns `None`
-/// when neither `LLAMA_EMBEDDING_BIN` nor the author's local build path is
-/// present. Callers that actually need the binary (e.g. prompt-embedding
-/// generation) should still go through [`llama_embedding_binary`].
-pub fn llama_embedding_binary_optional() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("LLAMA_EMBEDDING_BIN") {
-        let binary = PathBuf::from(path);
-        if binary.exists() {
-            return Some(binary);
-        }
-    }
-
-    None
-}
-
 /// Parse `ROUTING_MODE` into a [`RoutingMode`]. Returns `None` when the env
 /// var is unset so callers can keep the config-provided default.
 pub fn routing_mode_override_from_env() -> Option<RoutingMode> {
@@ -688,33 +634,6 @@ pub fn routing_mode_override_from_env() -> Option<RoutingMode> {
         "spiking" | "spiking_sim" => Some(RoutingMode::SpikingSim),
         _ => None,
     }
-}
-
-#[allow(dead_code)]
-fn parse_llama_embedding_payload(stdout: &str) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
-    #[derive(serde::Deserialize)]
-    struct JsonEmbeddingRow {
-        embedding: Vec<f32>,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct JsonEmbeddingList {
-        data: Vec<JsonEmbeddingRow>,
-    }
-
-    if let Ok(payload) = serde_json::from_str::<JsonEmbeddingList>(stdout)
-        && let Some(row) = payload.data.into_iter().next()
-    {
-        return Ok(row.embedding);
-    }
-
-    if let Ok(payload) = serde_json::from_str::<Vec<Vec<f32>>>(stdout)
-        && let Some(row) = payload.into_iter().next()
-    {
-        return Ok(row);
-    }
-
-    Err(Error::other("llama-embedding output did not contain a JSON embedding payload").into())
 }
 
 fn slug_from_path(path: &str) -> String {
@@ -947,6 +866,30 @@ mod tests {
         assert_eq!(
             csv_source_label(Path::new("/tmp/cyberpunk2077_combat.csv")),
             "csv_cyberpunk2077_combat"
+        );
+    }
+
+    #[test]
+    fn prompt_embedding_provider_defaults_to_ollama() {
+        assert_eq!(
+            resolve_prompt_embedding_provider(None),
+            PromptEmbeddingProvider::Ollama
+        );
+    }
+
+    #[test]
+    fn prompt_embedding_provider_accepts_ollama_case_insensitively() {
+        assert_eq!(
+            resolve_prompt_embedding_provider(Some("  OLLAMA  ")),
+            PromptEmbeddingProvider::Ollama
+        );
+    }
+
+    #[test]
+    fn prompt_embedding_provider_rejects_legacy_llama_cpp() {
+        assert_eq!(
+            resolve_prompt_embedding_provider(Some("llama_cpp")),
+            PromptEmbeddingProvider::SyntheticFallback
         );
     }
 }

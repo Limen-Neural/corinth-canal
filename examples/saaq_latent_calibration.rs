@@ -376,7 +376,7 @@ fn run_validation(
 
     let target_neurons = model.projector_mut().input_neurons();
     let (prompt_embedding, prompt_embedding_source) =
-        match prompt_embedding_for_validation(&ctx.spec.path, ctx.prompt_text, target_neurons) {
+        match prompt_embedding_for_validation(ctx.prompt_text, target_neurons) {
             Ok(result) => result,
             Err(error) => {
                 let error_message = error.to_string();

@@ -130,7 +130,7 @@ impl MappedGgufCheckpoint {
                 dequantize_row_q5_k(self.row_bytes(&info, token_id, path, tensor_name)?, d0)
             }
             GGML_TYPE_IQ3_S => Err(HybridError::UnsupportedFormat(format!(
-                "tensor '{tensor_name}' uses IQ3_S token embeddings; use llama.cpp prompt embeddings for this checkpoint"
+                "tensor '{tensor_name}' uses IQ3_S token embeddings; checkpoint-backed token embedding extraction is unsupported for this quantization"
             ))),
             other => Err(HybridError::UnsupportedFormat(format!(
                 "tensor '{tensor_name}' has unsupported ggml_type={other}"
