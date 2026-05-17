@@ -107,6 +107,12 @@ This discovery root is a machine-local convention on the author's Fedora
 box. CI and contributor machines should set `GGUF_CHECKPOINT_PATH`
 explicitly.
 
+Do not assume the filename suffix tells you which GPU synapse path will be
+used. Synapse selection is per-tensor: the adapter inspects the actual
+`ggml_type` of `blk.0.attn_q.weight`. A checkpoint labeled `IQ4_NL` at the file
+level may still route through `dequantized-q8_0` if that tensor is stored as
+`Q8_0` in the GGUF payload.
+
 ## Supported routing/model surfaces reflected in code
 
 Routing modes:

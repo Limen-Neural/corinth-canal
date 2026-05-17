@@ -84,17 +84,28 @@ Key pieces:
 
 The model-loading interface is custom and GGUF-backed.
 
+Important nuance: the adapter chooses the GPU synapse path from the selected
+tensor's actual `ggml_type`, not from the checkpoint filename or the GGUF-wide
+quantization label. Mixed-quant checkpoints are therefore expected. For
+example, a file named `...IQ4_NL.gguf` can still drive the `dequantized-q8_0`
+path when `blk.0.attn_q.weight` is stored as `Q8_0` inside the GGUF.
+
 `OlmoeRouter`:
 
 - memory-maps GGUF checkpoints in-repo
 - resolves a supported model family from GGUF metadata
 - locates the routing tensor and token embedding tensor
 - exposes token embedding extraction for validation workflows
+- inspects `blk.0.attn_q.weight` directly when selecting the GPU synapse source
 - selects a GPU synapse source from one of:
   - real `F16`
   - dequantized `Q8_0`
   - dequantized `Q5_K`
   - synthetic fallback
+
+When the selected tensor is dequantized and not already square, the GPU
+temporal path resamples it to the neuron grid instead of rejecting the
+checkpoint outright.
 
 Supported families in code today:
 
