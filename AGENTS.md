@@ -150,6 +150,8 @@ Basic commands:
 just setup
 just check
 just test
+```
+
 ## Entry Order
 
 - Start at `src/lib.rs` for the exported crate surface.
@@ -159,9 +161,9 @@ just test
 
 ## Workflow Policy
 
-- All `corinth-canal` work stays in `/home/raulmc/corinth-canal`.
-- Do not create or use additional `corinth-canal` worktrees outside the main repo path.
-- External edits are limited to `/home/raulmc/Julia/Surrogate_Viz.jl` and `/home/raulmc/llama.cpp` unless explicitly requested.
+- All `corinth-canal` work stays in the repository root.
+- Do not create or use additional `corinth-canal` worktrees outside the main repo.
+- External edits are limited to approved research tools and dependencies unless explicitly requested.
 
 ## Git Workflow
 
