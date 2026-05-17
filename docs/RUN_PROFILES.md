@@ -72,6 +72,32 @@ This example is the direct GPU-temporal smoke path. It is the correct entrypoint
 for validating resident synapse upload, GIF weighted temporal stepping, and the
 on-device best-walker reduction.
 
+## Synapse diagnostic
+
+| Profile | Command |
+|---------|---------|
+| Probe preferred synapse tensor selection only | `just synapse-diag` |
+
+`examples/synapse_diagnostic.rs` is the cheapest way to explain why a checkpoint
+selected `real`, `dequantized-q8_0`, `dequantized-q5_k`, or
+`synthetic-fallback`. It does not run SAAQ ticks or bring up the GPU temporal
+loop; it only loads the GGUF metadata and the preferred synapse tensor facts
+that drive `src/moe/adapter.rs::resolve_adapter`.
+
+The console line reports both:
+
+- the file-level family / architecture / quantization context
+- the selected tensor's actual `ggml_type`, dimensions, and derived synapse
+  source
+
+This matters for mixed-quant checkpoints. If the example prints a file whose
+name contains `IQ4_NL` but the `type=` field shows `Q8_0` and the `source=`
+field shows `dequantized-q8_0`, that is expected: the adapter branches on the
+actual `ggml_type` of `blk.0.attn_q.weight`, not on the filename suffix.
+
+The example also writes `<output_root>/synapse_diagnostic.json` for a structured
+record of the same fields.
+
 ## CSV replay
 
 | Profile | Command |
