@@ -18,7 +18,6 @@ Thumbs.db
 *.log
 
 # Agent notes
-AGENTS.md
 
 # Local Kilo planning scratch
 .kilo/plans/

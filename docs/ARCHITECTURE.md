@@ -1,31 +1,66 @@
 # Architecture
 
-`corinth-canal` is a single-crate reference implementation of the SNN-logic
-quantization bridge. It is intentionally *not* split into modular crates
-yet — the goal is to keep one working codebase where every component can be
-exercised end-to-end, then promote proven modules into the `rmems` modular
-repos (see `docs/PROMOTION_RULES.md` and `docs/MODULE_STATUS.md`).
+`corinth-canal` is the single-crate reference implementation of the `rmems`
+SNN-logic quantization bridge. It keeps the telemetry encoder, spiking hidden
+layer, projector, GGUF-backed routing bridge, and validation artifacts in one
+repository so the full research loop can be exercised within the required
+single-crate layout.
 
 ## Block diagram
 
 ```text
 TelemetrySnapshot
        │
-       ▼  TelemetryEncoder (delta modulation) / project_snapshot_current (GPU)
-[i8; 4] ternary spikes (+1 / 0 / -1)
+       ▼  TelemetryEncoder (CPU) / project_snapshot_current (GPU)
+[i8; 4] ternary telemetry events (+1 / 0 / -1)
        │
-       ▼  SignedSplitBankBridge (CPU) or GPU input_spikes buffer
-2048 input neurons
+       ▼  SignedSplitBankBridge (CPU) / GPU input_spikes buffer
+input spike train
        │
-       ▼  SparseGifHiddenLayer (CPU) or gif_step_weighted_tick (GPU, adaptive)
-2048 GIF hidden neurons with adaptive thresholds + history-aware SAAQ
+       ▼  SparseGifHiddenLayer (CPU) / gif_step_weighted_tick (GPU)
+hidden spike train + membrane/adaptation state
        │
-       ▼  Projector (SpikingTernary)
-dense embedding [EMBEDDING_DIM = 2048]
+       ▼  Projector
+embedding [EMBEDDING_DIM = 2048]
        │
-       ▼  OlmoeRouter (stub | dense | spiking sim) with GGUF-backed routing
-expert_weights + selected_experts + hidden + spike_count telemetry
+       ▼  OlmoeRouter (stub | dense | spiking sim)
+expert_weights + selected_experts + routed hidden state
+       │
+       ▼  SAAQ latent calibration / telemetry export
 ```
+
+## CPU and GPU paths
+
+### CPU path
+
+The CPU path is assembled from pure Rust components:
+
+- `TelemetryEncoder` converts a `TelemetrySnapshot` into `[i8; 4]` ternary
+  events using per-channel delta thresholds.
+- `SignedSplitBankBridge` expands those ternary events into an input spike
+  train.
+- `SparseGifHiddenLayer` runs a 2048-neuron GIF hidden layer with adaptive
+  thresholds.
+- `Projector` converts hidden activity into a 2048-dimensional embedding.
+- `OlmoeRouter` consumes the embedding and produces expert weights / selected
+  experts.
+
+### GPU path
+
+The GPU temporal path is orchestrated by `Model::prepare_gpu_temporal`,
+`Model::tick_gpu_temporal`, and `Model::forward_gpu_temporal`.
+
+Key pieces:
+
+- `project_snapshot_current` projects 4-channel telemetry into the GPU temporal
+  input buffer.
+- `gif_step_weighted_tick` advances the resident GIF temporal state.
+- GPU synapse weights are loaded from a GGUF-backed source when available.
+- The GPU path reuses resident synapse weights across calls using a source
+  signature cached in `GpuAccelerator`.
+- `forward_gpu_temporal` writes routing telemetry through the shared CSV helper.
+- `tick_gpu_temporal` advances GPU state but does not itself append routing CSV
+  rows.
 
 ## Module map
 
@@ -33,69 +68,131 @@ expert_weights + selected_experts + hidden + spike_count telemetry
 |--------|------|
 | `src/model/core.rs` | Runtime orchestration, config validation, forward paths |
 | `src/model/temporal.rs` | GPU temporal loop (`prepare_gpu_temporal`, `tick_gpu_temporal`, `forward_gpu_temporal`) |
-| `src/model/telemetry_io.rs` | Shared CSV writer for routing telemetry |
+| `src/model/telemetry_io.rs` | Shared CSV writer for GPU routing telemetry |
 | `src/moe/mod.rs` | `OlmoeRouter` host with routing-mode dispatch |
-| `src/moe/checkpoint.rs` | GGUF parse, mmap, tensor slicing, `GgufMetadata` |
-| `src/moe/adapter.rs` | Model-family adapter resolution (Olmoe, Qwen3Moe, Gemma4, DeepSeek2, LlamaMoe) |
-| `src/moe/routing.rs` | Router math (gate scores, normalize, resample) |
-| `src/projector.rs` | `ProjectionMode` spike → embedding |
-| `src/funnel.rs` | Telemetry funnel + GIF hidden layer |
-| `src/telemetry.rs` | `TelemetryEncoder`, `TelemetrySnapshot` |
-| `src/latent.rs` | SAAQ 1.0 solo + dual 1.0/1.5 calibrators + CSV export |
-| `src/gpu/` | cust-based kernel wrappers |
-| `examples/support/config.rs` | `RunConfig::from_env()` — single source of env truth for examples |
+| `src/moe/checkpoint.rs` | GGUF parse, mmap, tensor slicing, dequantization helpers |
+| `src/moe/adapter.rs` | Model-family adapter resolution and tensor selection |
+| `src/moe/routing.rs` | Router math (gate scores, resampling, normalization, top-k) |
+| `src/projector.rs` | `ProjectionMode` spike-to-embedding projection |
+| `src/funnel.rs` | Telemetry funnel, signed split banks, GIF hidden layer |
+| `src/telemetry.rs` | `TelemetryEncoder` and `TelemetrySnapshot` bridge |
+| `src/latent.rs` | SAAQ 1.0 / 1.5 calibration and CSV export |
+| `src/gpu/` | CUDA wrappers, buffers, kernel launchers |
+| `examples/support/config.rs` | Example-only environment/config resolution |
+
+## Model loading and routing bridge
+
+The model-loading interface is custom and GGUF-backed.
+
+`OlmoeRouter`:
+
+- memory-maps GGUF checkpoints in-repo
+- resolves a supported model family from GGUF metadata
+- locates the routing tensor and token embedding tensor
+- exposes token embedding extraction for validation workflows
+- selects a GPU synapse source from one of:
+  - real `F16`
+  - dequantized `Q8_0`
+  - dequantized `Q5_K`
+  - synthetic fallback
+
+Supported families in code today:
+
+- `Olmoe`
+- `Qwen3Moe`
+- `Gemma4`
+- `DeepSeek2`
+- `LlamaMoe`
+
+## Routing / projection modes
+
+### Projection modes
+
+- `RateSum`
+- `TemporalHistogram`
+- `MembraneSnapshot`
+- `SpikingTernary`
+
+### Routing modes
+
+- `StubUniform`
+- `DenseSim`
+- `SpikingSim`
+
+## Validation entrypoint and artifacts
+
+The primary research/validation loop is `examples/saaq_latent_calibration.rs`.
+For each run it writes artifacts including:
+
+- `tick_telemetry.txt`
+- `latent_telemetry.csv`
+- `run_manifest.json`
+- `summary.json`
+
+`snn_gpu_routing_telemetry.csv` is conditional: it is produced only by GPU
+routing paths that append telemetry rows. The normal
+`examples/saaq_latent_calibration.rs` loop uses `Model::tick_gpu_temporal`, so
+this CSV is not created in standard validation runs.
+
+When emitted, the GPU routing telemetry CSV schema is:
+
+```text
+token_idx,best_score,best_walker,spike_count,mean_adaptation,active_fraction
+```
+
+The latent telemetry CSV includes both SAAQ trajectories via
+`SnnDualLatentCalibrator`; one rule is selected as the primary/legacy
+compatibility projection while the legacy and v1.5 columns are both emitted.
 
 ## Hidden control flow
 
-A few control paths are not obvious from a top-level read. They are called
-out here so future promotion out of this reference repo does not lose them.
+A few control paths are easy to miss from a top-level read.
 
-### CWD-relative write: `snn_gpu_routing_telemetry.csv`
+### Routing telemetry CSV path behavior
 
-`Model::forward_gpu_temporal` (and `Model::forward` → GPU routing) call
-`append_gpu_routing_telemetry_row` with a path resolved from
-`ModelConfig::gpu_routing_telemetry_path`. When that field is `None`,
-the path falls back to the bare filename `snn_gpu_routing_telemetry.csv`,
-which `std::fs` resolves against the process CWD.
+`Model::forward_gpu_temporal` and `Model::compute_routing_telemetry` resolve the
+routing telemetry sink through `ModelConfig::gpu_routing_telemetry_path`.
+When this field is `None`, the runtime falls back to the legacy
+CWD-relative filename `snn_gpu_routing_telemetry.csv`.
 
-- `saaq_latent_calibration` sets the path explicitly into
-  `<run_dir>/snn_gpu_routing_telemetry.csv`, so it is self-contained.
-- `telemetry_bridge` / `csv_replay` inherit the default (CWD). Launching
-  them from the repo root is the intended workflow.
-- `tick_gpu_temporal` does **not** touch this CSV; only the
-  `forward_gpu_temporal` path does.
+Implications:
+
+- `examples/saaq_latent_calibration.rs` sets the path explicitly into the run
+  directory, so any routing telemetry emitted by a writing path stays per-run.
+- The same runner currently advances the GPU loop through
+  `Model::tick_gpu_temporal`, which does not append routing CSV rows on its own.
+- Other call sites may still rely on the legacy fallback when they do not set
+  the path explicitly.
 
 ### Env-resolved paths
 
-Every machine-specific path is resolved in `examples/support/config.rs::RunConfig::from_env()`.
-The runtime crate itself (under `src/`) never reads environment variables
-for paths. If you are promoting a module out of this repo, the `RunConfig`
-surface is the contract to preserve.
+Machine-specific path discovery belongs in `examples/support/config.rs`.
+The library code under `src/` does not perform environment-variable path
+resolution for checkpoints, telemetry CSVs, or artifact roots.
 
-### Telemetry source fallback
+### Telemetry source stamping
 
-`resolve_telemetry_source()` stamps `source_label` into every
-`run_manifest.json` with one of three values:
+The validation runner stamps a source label into `run_manifest.json` using one
+of:
 
-- `synthetic` — explicit or default stub
-- `synthetic_fallback` — requested CSV but it was missing / malformed / empty
-- `csv_<stem>` — canonical CSV path, e.g. `csv_re4` for `telemetry.csv`
+- `synthetic`
+- `synthetic_fallback`
+- `csv_<stem>`
 
-This means the manifest is always truthful about what actually fed the run,
-even when the configured source silently degraded.
-# Observability
+This makes fallback behavior explicit in artifacts instead of hiding it behind a
+successful run.
 
-The example binaries use a shared observability wrapper in
+## Observability
+
+The example binaries share observability helpers under
 `examples/support/observability.rs`.
 
-- `command_start` and `command_finish` are emitted for every example binary.
-- Tracing fields are stable across examples:
-  `repo`, `command`, `run_id`, `git_sha`, `latency_ms`, `success`,
-  `error_category`.
-- Sentry is opt-in only. If `SENTRY_DSN` is unset or blank, the wrappers do
-  not initialize a client and do not introduce a network dependency.
-- Only safe diagnostics are attached to Sentry scope:
-  `repo`, `command`, `git_sha`, `model_slug`, `telemetry_source`,
-  `heartbeat_enabled`, `validation_status`, and `error_category`.
-- Absolute checkpoint paths, DSNs, and generated artifact paths are not added
-  to Sentry tags or extras by the wrappers.
+- `command_start` and `command_finish` tracing events are emitted for every
+  example command.
+- Sentry is opt-in only. If `SENTRY_DSN` is unset or blank, the examples remain
+  local/offline.
+- The wrappers attach only safe diagnostic fields such as `repo`, `command`,
+  `git_sha`, `model_slug`, `telemetry_source`, `heartbeat_enabled`,
+  `validation_status`, and `error_category`.
+- Absolute checkpoint paths and artifact paths are not attached as Sentry tags
+  by the wrappers.

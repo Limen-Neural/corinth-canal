@@ -20,8 +20,47 @@ not been blessed and should be considered experimental.
 | Heartbeat ON only | synthetic | on | 1.5 | `HEARTBEAT_MATRIX=on just saaq` |
 | Legacy rule parity | synthetic | both | 1.0 | `SAAQ_RULE=legacy just saaq` |
 
-Dual-SAAQ columns (`saaq_delta_q_*_v1_0` / `_v1_5`) are emitted regardless of
-`SAAQ_RULE`; the env var only picks which rule fills the legacy columns.
+Dual-SAAQ columns are emitted regardless of `SAAQ_RULE`; the env var only
+selects which rule fills the legacy compatibility columns.
+
+### Validation outputs
+
+`examples/saaq_latent_calibration.rs` writes a per-run directory under the
+configured output root. Each run directory contains:
+
+- `tick_telemetry.txt`
+- `latent_telemetry.csv`
+- `run_manifest.json`
+- `summary.json`
+
+`snn_gpu_routing_telemetry.csv` is conditional: it is produced only by GPU
+routing paths that append telemetry rows (for example
+`Model::forward_gpu_temporal`). The normal `saaq_latent_calibration` loop uses
+`Model::tick_gpu_temporal`, so this CSV is not created in standard validation
+runs.
+
+When emitted, the GPU routing telemetry CSV schema is:
+
+```text
+token_idx,best_score,best_walker,spike_count,mean_adaptation,active_fraction
+```
+
+The latent telemetry CSV includes both SAAQ trajectories via
+`SnnDualLatentCalibrator`:
+
+- legacy / primary compatibility columns
+- explicit legacy trajectory columns
+- explicit v1.5 trajectory columns
+
+### Operational notes
+
+- `TICKS=0` with `TELEMETRY_SOURCE=csv` uses the full CSV row count so corpus
+  runs cover exactly one telemetry loop.
+- When `TICKS > csv_row_count`, the runner warns about wraparound contamination.
+- `STRICT_REPEAT_CHECK=true` enables repeat-to-repeat comparison in the
+  validation workflow.
+- `run_manifest.json` stamps the actual telemetry source label, including
+  `synthetic_fallback` when CSV replay degrades.
 
 ## GPU smoke test
 
@@ -29,11 +68,21 @@ Dual-SAAQ columns (`saaq_delta_q_*_v1_0` / `_v1_5`) are emitted regardless of
 |---------|---------|
 | 10k GPU ticks, real checkpoint | `GGUF_CHECKPOINT_PATH=... just smoke` |
 
+This example is the direct GPU-temporal smoke path. It is the correct entrypoint
+for validating resident synapse upload, GIF weighted temporal stepping, and the
+on-device best-walker reduction.
+
 ## CSV replay
 
 | Profile | Command |
 |---------|---------|
 | Ingest canonical telemetry CSV | `just replay /path/to/telemetry.csv` |
+
+Canonical CSV schema consumed by replay and validation:
+
+```text
+timestamp_ms,gpu_temp_c,gpu_power_w,cpu_tctl_c,cpu_package_power_w
+```
 
 ## Telemetry bridge demo
 
@@ -57,3 +106,19 @@ up to five MoE families under `$HOME/Downloads/SNN_Quantization/`:
 This discovery root is a machine-local convention on the author's Fedora
 box. CI and contributor machines should set `GGUF_CHECKPOINT_PATH`
 explicitly.
+
+## Supported routing/model surfaces reflected in code
+
+Routing modes:
+
+- `StubUniform`
+- `DenseSim`
+- `SpikingSim`
+
+Model families supported by the GGUF adapter layer:
+
+- `Olmoe`
+- `Qwen3Moe`
+- `Gemma4`
+- `DeepSeek2`
+- `LlamaMoe`
