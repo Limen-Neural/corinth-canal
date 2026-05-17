@@ -45,18 +45,23 @@ Experimental tooling:
 
 - Goose Agent — experimental only. Do not treat it as the default execution
   path.
+- OpenClaw — experimental only. Do not treat it as the default execution path.
 - Blocks — experimental only. Blocks uses the maintainer's ChatGPT Pro
   subscription and should be treated as an optional, non-default path.
 
-Optional third-party integrations:
+Optional third-party integrations and evaluated tooling:
 
 - Google APIs
 - NVIDIA NIM
 - OpenRouter
 - Grok APIs
+- CodeHawk — optional evaluated tooling; currently available via a 30-day free
+  trial.
+- IBM bob — potential evaluated tooling; needs verification before being
+  documented as enabled.
 
-These integrations are optional and should only be referenced at a high level
-in repository docs and examples.
+These integrations and tool references are optional and should only be
+referenced at a high level in repository docs and examples.
 
 Safety and documentation rules for executor tooling:
 
