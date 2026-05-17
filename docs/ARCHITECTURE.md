@@ -128,9 +128,13 @@ For each run it writes artifacts including:
 - `latent_telemetry.csv`
 - `run_manifest.json`
 - `summary.json`
-- `snn_gpu_routing_telemetry.csv`
 
-The GPU routing telemetry CSV schema is:
+`snn_gpu_routing_telemetry.csv` is conditional: it is produced only by GPU
+routing paths that append telemetry rows. The normal
+`examples/saaq_latent_calibration.rs` loop uses `Model::tick_gpu_temporal`, so
+this CSV is not created in standard validation runs.
+
+When emitted, the GPU routing telemetry CSV schema is:
 
 ```text
 token_idx,best_score,best_walker,spike_count,mean_adaptation,active_fraction
@@ -154,7 +158,9 @@ CWD-relative filename `snn_gpu_routing_telemetry.csv`.
 Implications:
 
 - `examples/saaq_latent_calibration.rs` sets the path explicitly into the run
-  directory, so its routing telemetry stays per-run.
+  directory, so any routing telemetry emitted by a writing path stays per-run.
+- The same runner currently advances the GPU loop through
+  `Model::tick_gpu_temporal`, which does not append routing CSV rows on its own.
 - Other call sites may still rely on the legacy fallback when they do not set
   the path explicitly.
 

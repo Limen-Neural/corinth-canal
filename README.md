@@ -120,9 +120,14 @@ The validation runner writes per-run artifacts including:
 - `latent_telemetry.csv`
 - `run_manifest.json`
 - `summary.json`
-- `snn_gpu_routing_telemetry.csv`
 
-GPU routing telemetry CSV schema:
+`snn_gpu_routing_telemetry.csv` is conditional: it is produced only by GPU
+routing paths that append telemetry rows (for example
+`Model::forward_gpu_temporal`). The normal `saaq_latent_calibration` loop uses
+`Model::tick_gpu_temporal`, so this CSV is not created in standard validation
+runs.
+
+When emitted, the GPU routing telemetry CSV schema is:
 
 ```text
 token_idx,best_score,best_walker,spike_count,mean_adaptation,active_fraction
@@ -134,9 +139,12 @@ token_idx,best_score,best_walker,spike_count,mean_adaptation,active_fraction
 
 ```bash
 just setup
-just check
-just test
+cargo check --all-targets --no-default-features
+cargo test --no-default-features
 ```
+
+On CUDA-equipped setups with `nvcc` available, `just check` and `just test`
+exercise the default feature set.
 
 ### Run the primary validation loop
 

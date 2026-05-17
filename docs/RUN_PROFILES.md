@@ -32,9 +32,14 @@ configured output root. Each run directory contains:
 - `latent_telemetry.csv`
 - `run_manifest.json`
 - `summary.json`
-- `snn_gpu_routing_telemetry.csv`
 
-The GPU routing telemetry CSV schema is:
+`snn_gpu_routing_telemetry.csv` is conditional: it is produced only by GPU
+routing paths that append telemetry rows (for example
+`Model::forward_gpu_temporal`). The normal `saaq_latent_calibration` loop uses
+`Model::tick_gpu_temporal`, so this CSV is not created in standard validation
+runs.
+
+When emitted, the GPU routing telemetry CSV schema is:
 
 ```text
 token_idx,best_score,best_walker,spike_count,mean_adaptation,active_fraction
