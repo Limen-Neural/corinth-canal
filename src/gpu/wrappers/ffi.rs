@@ -7,6 +7,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 use super::error::{GpuError, GpuResult};
+use super::sentry_capture::{LaunchContext, LaunchType, capture_launch_failure};
 use cust::memory::{DeviceCopy, DevicePointer};
 use cust::stream::Stream;
 use std::ffi::c_void;
@@ -77,9 +78,19 @@ pub fn launch_gif_step_weighted_f16(
     if code == 0 {
         Ok(())
     } else {
-        Err(GpuError::LaunchFailed(format!(
+        let context = LaunchContext {
+            kernel_name: "gif_step_weighted_f16".to_string(),
+            launch_type: LaunchType::CAbiShim,
+            grid: (grid_x, 1, 1),
+            block: (block_x, 1, 1),
+            shared_mem: shared_bytes,
+            neuron_count: Some(n_neurons as usize),
+        };
+        let gpu_error = GpuError::LaunchFailed(format!(
             "myelin_launch_gif_step_weighted_f16 failed with CUDA runtime error code {code}"
-        )))
+        ));
+        capture_launch_failure(context, &gpu_error, None);
+        Err(gpu_error)
     }
 }
 
@@ -116,9 +127,19 @@ pub fn launch_saaq_find_best_walker(
     if code == 0 {
         Ok(())
     } else {
-        Err(GpuError::LaunchFailed(format!(
+        let context = LaunchContext {
+            kernel_name: "saaq_find_best_walker".to_string(),
+            launch_type: LaunchType::CAbiShim,
+            grid: (grid_x, 1, 1),
+            block: (block_x, 1, 1),
+            shared_mem: shared_bytes,
+            neuron_count: Some(n_neurons as usize),
+        };
+        let gpu_error = GpuError::LaunchFailed(format!(
             "myelin_launch_saaq_find_best_walker failed with CUDA runtime error code {code}"
-        )))
+        ));
+        capture_launch_failure(context, &gpu_error, None);
+        Err(gpu_error)
     }
 }
 
