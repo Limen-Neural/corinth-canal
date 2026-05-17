@@ -34,6 +34,11 @@ Memory-agent backbone:
   memory-agent backbone for planning, recall, review support, and follow-up
   execution assistance.
 
+Approved IDE agents:
+
+- Antigravity — approved IDE agent for repository work.
+- Zed — approved IDE agent for repository work.
+
 Approved fallback executors:
 
 - Opencode — backup executor path, including free-API usage scenarios.
