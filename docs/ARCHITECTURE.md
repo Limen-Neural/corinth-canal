@@ -1,10 +1,10 @@
 # Architecture
 
 `corinth-canal` is the single-crate reference implementation of the `rmems`
-SNN-logic quantization bridge. It intentionally keeps the telemetry encoder,
-spiking hidden layer, projector, GGUF-backed routing bridge, and validation
-artifacts in one repository so the full research loop can be exercised before
-proven components are promoted into separate `rmems-*` crates.
+SNN-logic quantization bridge. It keeps the telemetry encoder, spiking hidden
+layer, projector, GGUF-backed routing bridge, and validation artifacts in one
+repository so the full research loop can be exercised within the required
+single-crate layout.
 
 ## Block diagram
 
