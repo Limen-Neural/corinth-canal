@@ -47,14 +47,19 @@
 //!
 //! ## Quick start
 //!
+//! The `model` module is available when the `cuda` feature is enabled (the
+//! default feature set).
+//!
 //! ```no_run
+//! # #[cfg(feature = "cuda")] {
 //! use corinth_canal::model::{Model, ModelConfig};
-//! use corinth_canal::telemetry::TelemetrySnapshot;
+//! use corinth_canal::TelemetrySnapshot;
 //!
 //! let mut model = Model::new(ModelConfig::default()).unwrap();
 //! let output = model.forward(&TelemetrySnapshot::default()).unwrap();
 //!
 //! println!("Selected experts: {:?}", output.selected_experts);
+//! # }
 //! ```
 
 pub mod error;
