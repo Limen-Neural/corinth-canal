@@ -148,9 +148,12 @@ Basic commands:
 
 ```bash
 just setup
-just check
-just test
+cargo check --all-targets --no-default-features
+cargo test --no-default-features
 ```
+
+On CUDA-equipped setups with `nvcc` available, `just check` and `just test`
+exercise the default feature set.
 
 ## Entry Order
 
@@ -169,7 +172,8 @@ just test
 
 - Prefer `git` commands over MCP tools for branch and PR operations in this environment.
 - Keep behavioral changes separate from structural refactors when possible.
-- Run `cargo check`, `cargo test`, and `cargo build --examples` before closing substantial Rust changes.
+- Run `cargo check --no-default-features` and `cargo test --no-default-features` before closing substantial Rust changes.
+- On CUDA-equipped setups with `nvcc` available, also run the default-feature path and `cargo build --examples`.
 
 ## Repository Context
 
