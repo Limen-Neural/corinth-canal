@@ -330,11 +330,29 @@ impl MappedGgufCheckpoint {
         }
 
         let start = info.absolute_offset;
-        let end = start + info.n_elements * size_of::<f32>();
+        let byte_len = info
+            .n_elements
+            .checked_mul(size_of::<f32>())
+            .ok_or_else(|| HybridError::ModelLoad {
+                path: path.to_owned(),
+                reason: format!("tensor '{name}' byte length overflow"),
+            })?;
+        let end = start
+            .checked_add(byte_len)
+            .ok_or_else(|| HybridError::ModelLoad {
+                path: path.to_owned(),
+                reason: format!("tensor '{name}' end offset overflow"),
+            })?;
         if end > self.mmap.len() {
             return Err(HybridError::ModelLoad {
                 path: path.to_owned(),
                 reason: format!("tensor '{name}' extends beyond mapped file"),
+            });
+        }
+        if !start.is_multiple_of(std::mem::align_of::<f32>()) {
+            return Err(HybridError::ModelLoad {
+                path: path.to_owned(),
+                reason: format!("tensor '{name}' has misaligned F32 data offset {start}"),
             });
         }
 
@@ -354,7 +372,19 @@ impl MappedGgufCheckpoint {
         tensor_name: &str,
     ) -> Result<Vec<u16>> {
         let byte_start = info.absolute_offset;
-        let byte_end = byte_start + info.n_elements * 2;
+        let byte_len = info
+            .n_elements
+            .checked_mul(size_of::<u16>())
+            .ok_or_else(|| HybridError::ModelLoad {
+                path: path.to_owned(),
+                reason: format!("tensor '{tensor_name}' byte length overflow"),
+            })?;
+        let byte_end = byte_start
+            .checked_add(byte_len)
+            .ok_or_else(|| HybridError::ModelLoad {
+                path: path.to_owned(),
+                reason: format!("tensor '{tensor_name}' end offset overflow"),
+            })?;
         if byte_end > self.mmap.len() {
             return Err(HybridError::ModelLoad {
                 path: path.to_owned(),
@@ -395,7 +425,12 @@ impl MappedGgufCheckpoint {
                     path: path.to_owned(),
                     reason: format!("tensor '{tensor_name}' row offset overflow"),
                 })?;
-        let end = start + row_size;
+        let end = start
+            .checked_add(row_size)
+            .ok_or_else(|| HybridError::ModelLoad {
+                path: path.to_owned(),
+                reason: format!("tensor '{tensor_name}' row end offset overflow"),
+            })?;
         if end > self.mmap.len() {
             return Err(HybridError::ModelLoad {
                 path: path.to_owned(),
@@ -539,8 +574,21 @@ impl RegisteredTensorSliceU16 {
 
         let page_size = page_size_bytes(path)?;
         let aligned_start = absolute_offset / page_size * page_size;
-        let aligned_end = align_up(absolute_offset + byte_len, page_size);
-        let register_len = aligned_end - aligned_start;
+        let tensor_end =
+            absolute_offset
+                .checked_add(byte_len)
+                .ok_or_else(|| HybridError::ModelLoad {
+                    path: path.to_owned(),
+                    reason: format!("tensor '{tensor_name}' registration end overflow"),
+                })?;
+        let aligned_end = checked_align_up(tensor_end, page_size, path, tensor_name)?;
+        let register_len =
+            aligned_end
+                .checked_sub(aligned_start)
+                .ok_or_else(|| HybridError::ModelLoad {
+                    path: path.to_owned(),
+                    reason: format!("tensor '{tensor_name}' registration range underflow"),
+                })?;
 
         if aligned_end > mmap.len() {
             return Err(HybridError::ModelLoad {
@@ -556,6 +604,14 @@ impl RegisteredTensorSliceU16 {
         // even though it does not modify the memory contents.
         let register_ptr = unsafe { mmap.as_ptr().add(aligned_start) as *mut c_void };
         cuda_host_register(register_ptr, register_len, path, tensor_name)?;
+        if !absolute_offset.is_multiple_of(std::mem::align_of::<u16>()) {
+            return Err(HybridError::ModelLoad {
+                path: path.to_owned(),
+                reason: format!(
+                    "tensor '{tensor_name}' has misaligned F16 data offset {absolute_offset}"
+                ),
+            });
+        }
 
         // SAFETY: `absolute_offset` is within the mmap (covered by the
         // registered region above) and F16 data is at least 2-byte aligned
@@ -725,6 +781,26 @@ fn align_up(value: usize, alignment: usize) -> usize {
     } else {
         value.div_ceil(alignment) * alignment
     }
+}
+
+#[cfg(feature = "cuda")]
+fn checked_align_up(
+    value: usize,
+    alignment: usize,
+    path: &str,
+    tensor_name: &str,
+) -> Result<usize> {
+    if alignment == 0 {
+        return Ok(value);
+    }
+
+    value
+        .div_ceil(alignment)
+        .checked_mul(alignment)
+        .ok_or_else(|| HybridError::ModelLoad {
+            path: path.to_owned(),
+            reason: format!("tensor '{tensor_name}' aligned offset overflow"),
+        })
 }
 
 #[cfg(feature = "cuda")]

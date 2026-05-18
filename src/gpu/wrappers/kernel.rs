@@ -153,23 +153,7 @@ impl KernelModule {
             Ok(module) => Ok(module),
             Err(e) => {
                 let (error_log, info_log) = capture_jit_log_split(bytes);
-                let combined_log = if !error_log.is_empty() || !info_log.is_empty() {
-                    let mut log = String::new();
-                    if !error_log.is_empty() {
-                        log.push_str("error: ");
-                        log.push_str(&error_log);
-                    }
-                    if !info_log.is_empty() {
-                        if !log.is_empty() {
-                            log.push('\n');
-                        }
-                        log.push_str("info: ");
-                        log.push_str(&info_log);
-                    }
-                    log
-                } else {
-                    "<driver returned no JIT diagnostics>".to_string()
-                };
+                let combined_log = format_jit_diagnostics(&error_log, &info_log);
 
                 eprintln!(
                     "[CUDA JIT] Failed to load module '{name}': {e:?}\n\
@@ -197,6 +181,26 @@ impl KernelModule {
             }
         }
     }
+}
+
+fn format_jit_diagnostics(error_log: &str, info_log: &str) -> String {
+    if error_log.is_empty() && info_log.is_empty() {
+        return "<driver returned no JIT diagnostics>".to_string();
+    }
+
+    let mut log = String::new();
+    if !error_log.is_empty() {
+        log.push_str("error: ");
+        log.push_str(error_log);
+    }
+    if !info_log.is_empty() {
+        if !log.is_empty() {
+            log.push('\n');
+        }
+        log.push_str("info: ");
+        log.push_str(info_log);
+    }
+    log
 }
 
 /// Re-run `cuModuleLoadDataEx` through the raw driver API with error/info

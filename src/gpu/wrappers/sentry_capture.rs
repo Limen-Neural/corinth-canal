@@ -14,11 +14,12 @@
 // ════════════════════════════════════════════════════════════════════
 
 use super::error::GpuError;
-use cust::device::{Device, DeviceAttribute};
+use cust::context::legacy::CurrentContext;
+use cust::device::DeviceAttribute;
 use serde_json::json;
 
 fn runtime_gpu_arch_tag() -> String {
-    Device::get_device(0)
+    CurrentContext::get_device()
         .ok()
         .and_then(|device| {
             let major = device
