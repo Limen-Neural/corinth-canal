@@ -14,7 +14,7 @@ use super::error::{GpuError, GpuResult};
 use super::ffi;
 use super::kernel::KernelModule;
 use super::memory::GpuBuffer;
-use super::sentry_capture::{capture_launch_failure, LaunchContext, LaunchType};
+use super::sentry_capture::{LaunchContext, LaunchType, capture_launch_failure};
 use crate::types::TelemetrySnapshot;
 use cust::launch;
 use cust::stream::{Stream, StreamFlags};
@@ -416,7 +416,8 @@ impl GpuAccelerator {
                             shared_mem: shared_bytes,
                             neuron_count: Some(neuron_count),
                         };
-                        let gpu_error = GpuError::LaunchFailed(format!("gif_step_weighted launch: {e:?}"));
+                        let gpu_error =
+                            GpuError::LaunchFailed(format!("gif_step_weighted launch: {e:?}"));
                         capture_launch_failure(context, &gpu_error, None);
                         gpu_error
                     })?;
@@ -740,7 +741,8 @@ impl GpuAccelerator {
                     shared_mem: SATSOLVER_SHARED_MEM_BYTES,
                     neuron_count: None,
                 };
-                let gpu_error = GpuError::LaunchFailed(format!("satsolver_aux_update launch: {e:?}"));
+                let gpu_error =
+                    GpuError::LaunchFailed(format!("satsolver_aux_update launch: {e:?}"));
                 capture_launch_failure(context, &gpu_error, None);
                 gpu_error
             })?;

@@ -18,7 +18,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 use super::error::{GpuError, GpuResult};
-use super::sentry_capture::{capture_launch_failure, LaunchContext, LaunchType};
+use super::sentry_capture::{LaunchContext, LaunchType, capture_launch_failure};
 use cust::function::Function;
 use cust::module::Module;
 use cust::sys as cuda;
@@ -170,18 +170,18 @@ impl KernelModule {
                 } else {
                     "<driver returned no JIT diagnostics>".to_string()
                 };
-                
+
                 eprintln!(
                     "[CUDA JIT] Failed to load module '{name}': {e:?}\n\
                      --- CUDA JIT log ---\n{combined_log}\n--------------------"
                 );
-                
+
                 let gpu_error = GpuError::ModuleLoadFailed(format!(
                     "JIT/load failed for '{name}': {e:?} \
                      (target: sm_120 — check driver \u{2265} 570 and CUDA toolkit \u{2265} 12.8)\n\
                      --- CUDA JIT log ---\n{combined_log}\n--------------------"
                 ));
-                
+
                 // Capture to Sentry with JIT logs
                 let context = LaunchContext {
                     kernel_name: name.to_string(),
@@ -192,7 +192,7 @@ impl KernelModule {
                     neuron_count: None,
                 };
                 capture_launch_failure(context, &gpu_error, Some((error_log, info_log)));
-                
+
                 Err(gpu_error)
             }
         }

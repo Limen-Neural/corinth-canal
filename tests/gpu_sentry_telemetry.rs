@@ -6,10 +6,10 @@
 
 #[cfg(feature = "cuda")]
 mod gpu_telemetry_tests {
+    use corinth_canal::gpu::wrappers::error::GpuError;
     use corinth_canal::gpu::wrappers::sentry_capture::{
         LaunchContext, LaunchType, capture_launch_failure,
     };
-    use corinth_canal::gpu::wrappers::error::GpuError;
 
     #[test]
     fn test_launch_context_creation() {
@@ -41,7 +41,7 @@ mod gpu_telemetry_tests {
             neuron_count: Some(2048),
         };
         let error = GpuError::LaunchFailed("CUDA error: invalid configuration".to_string());
-        
+
         // Should be a no-op when Sentry is not configured
         capture_launch_failure(context, &error, None);
     }
@@ -57,13 +57,13 @@ mod gpu_telemetry_tests {
             neuron_count: None,
         };
         let error = GpuError::ModuleLoadFailed(
-            "JIT compilation failed: unsupported PTX version".to_string()
+            "JIT compilation failed: unsupported PTX version".to_string(),
         );
         let jit_logs = (
             "error: ptxas fatal: Unsupported .version 8.5".to_string(),
             "info: 0 bytes gmem".to_string(),
         );
-        
+
         // Should handle JIT logs without panicking
         capture_launch_failure(context, &error, Some(jit_logs));
     }
@@ -79,7 +79,7 @@ mod gpu_telemetry_tests {
             neuron_count: Some(2048),
         };
         let error = GpuError::LaunchFailed("CUDA runtime error code 1".to_string());
-        
+
         capture_launch_failure(context, &error, None);
     }
 
@@ -102,10 +102,7 @@ mod gpu_telemetry_tests {
                 "kernel_not_found",
                 GpuError::KernelNotFound("unknown_kernel".to_string()),
             ),
-            (
-                "no_gpu",
-                GpuError::NoGpu,
-            ),
+            ("no_gpu", GpuError::NoGpu),
         ];
 
         for (expected_category, error) in test_cases {
@@ -117,7 +114,7 @@ mod gpu_telemetry_tests {
                 shared_mem: 0,
                 neuron_count: None,
             };
-            
+
             // Should handle all error types without panicking
             capture_launch_failure(context, &error, None);
         }
@@ -130,12 +127,12 @@ mod gpu_telemetry_tests {
             kernel_name: "satsolver_aux_update".to_string(),
             launch_type: LaunchType::PtxFatbin,
             grid: (65535, 65535, 1), // Max grid dimensions
-            block: (1024, 1, 1),      // Max block size
-            shared_mem: 49152,        // Max shared memory
+            block: (1024, 1, 1),     // Max block size
+            shared_mem: 49152,       // Max shared memory
             neuron_count: None,
         };
         let error = GpuError::LaunchFailed("too many resources requested".to_string());
-        
+
         capture_launch_failure(context, &error, None);
     }
 
@@ -151,7 +148,7 @@ mod gpu_telemetry_tests {
             neuron_count: None,
         };
         let error = GpuError::ModuleLoadFailed("empty fatbin".to_string());
-        
+
         capture_launch_failure(context, &error, None);
     }
 
