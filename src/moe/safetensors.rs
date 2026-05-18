@@ -465,11 +465,6 @@ fn classify_tensor(name: &str, shape: &[usize]) -> Vec<&'static str> {
             .min()
             .is_some_and(|v| (2..=512).contains(&v))
         && shape.iter().copied().max().is_some_and(|v| v >= 512);
-    if router_name {
-        labels.push("moe_router_candidate");
-    } else if router_shape {
-        labels.push("possible_moe_router_shape");
-    }
 
     let has_expert_context =
         lower.contains("experts") || lower.contains(".expert") || lower.contains("/expert");
@@ -482,6 +477,10 @@ fn classify_tensor(name: &str, shape: &[usize]) -> Vec<&'static str> {
     let expert_name = has_expert_context && expert_weight_name;
     if expert_name {
         labels.push("moe_expert_candidate");
+    } else if router_name {
+        labels.push("moe_router_candidate");
+    } else if router_shape {
+        labels.push("possible_moe_router_shape");
     }
 
     labels
