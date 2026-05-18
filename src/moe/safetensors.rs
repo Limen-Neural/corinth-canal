@@ -13,7 +13,8 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 const SAFETENSORS_EXTENSION: &str = "safetensors";
-const MAX_HEADER_BYTES: usize = 256 * 1024 * 1024;
+const MAX_HEADER_BYTES: usize = 64 * 1024 * 1024;
+const MAX_INDEX_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SafetensorsManifest {
@@ -41,7 +42,7 @@ pub struct SafetensorsTensorRecord {
     pub byte_size: usize,
     pub source_shard: String,
     pub data_offsets: [usize; 2],
-    pub labels: Vec<String>,
+    pub labels: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -93,13 +94,16 @@ pub fn write_safetensors_manifest(
     checkpoint_path: impl AsRef<Path>,
     output_path: impl AsRef<Path>,
 ) -> Result<SafetensorsManifest> {
+    let checkpoint_path = checkpoint_path.as_ref();
+    let output_path = output_path.as_ref();
     let manifest = inspect_safetensors_checkpoint(checkpoint_path)?;
+    reject_output_checkpoint_conflict(checkpoint_path, output_path, &manifest)?;
     let json = serde_json::to_string_pretty(&manifest).map_err(|e| HybridError::ModelLoad {
-        path: output_path.as_ref().display().to_string(),
+        path: output_path.display().to_string(),
         reason: format!("serialize Safetensors manifest: {e}"),
     })?;
-    fs::write(output_path.as_ref(), json).map_err(|e| HybridError::ModelLoad {
-        path: output_path.as_ref().display().to_string(),
+    fs::write(output_path, json).map_err(|e| HybridError::ModelLoad {
+        path: output_path.display().to_string(),
         reason: e.to_string(),
     })?;
     Ok(manifest)
@@ -134,24 +138,70 @@ fn inspect_directory(root: &Path) -> Result<SafetensorsManifest> {
 
 fn inspect_index(root: &Path, index_path: &Path) -> Result<SafetensorsManifest> {
     let raw = read_index(index_path)?;
-    let shards = raw
-        .weight_map
-        .values()
-        .map(|relative| index_shard_path(root, index_path, relative))
-        .collect::<Result<BTreeSet<_>>>()?
-        .into_iter()
-        .collect::<Vec<_>>();
+    let index_tensor_count = raw.weight_map.len();
+    let mut expected_by_shard: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
+    for (tensor_name, relative) in raw.weight_map {
+        let shard_path = index_shard_path(root, index_path, &relative)?;
+        expected_by_shard
+            .entry(shard_path)
+            .or_default()
+            .insert(tensor_name);
+    }
+    let shards = expected_by_shard.keys().cloned().collect::<Vec<_>>();
 
-    let mut metadata = stringify_metadata(raw.metadata);
-    metadata.insert(
-        "index_tensor_count".into(),
-        raw.weight_map.len().to_string(),
-    );
+    let mut metadata = stringify_metadata("index", raw.metadata);
+    metadata.insert("index_tensor_count".into(), index_tensor_count.to_string());
     let index_file = Some(relative_path(index_path, root));
-    inspect_shards("hf_index", root, index_file, shards).map(|mut manifest| {
-        manifest.checkpoint.metadata.extend(metadata);
-        manifest
-    })
+    inspect_index_shards(root, index_file, shards, expected_by_shard, metadata)
+}
+
+fn inspect_index_shards(
+    root: &Path,
+    index_file: Option<String>,
+    shards: Vec<PathBuf>,
+    expected_by_shard: BTreeMap<PathBuf, BTreeSet<String>>,
+    mut metadata: BTreeMap<String, String>,
+) -> Result<SafetensorsManifest> {
+    let mut tensors = Vec::new();
+    for shard_path in &shards {
+        let expected = expected_by_shard.get(shard_path).ok_or_else(|| {
+            model_load(
+                shard_path,
+                "internal error: index shard has no expected tensor set".into(),
+            )
+        })?;
+        let shard = inspect_shard(shard_path, root)?;
+        merge_shard_metadata(
+            &mut metadata,
+            &relative_path(shard_path, root),
+            shard.metadata,
+        );
+
+        let found = shard
+            .tensors
+            .iter()
+            .map(|tensor| tensor.name.clone())
+            .collect::<BTreeSet<_>>();
+        if let Some(missing) = expected.difference(&found).next() {
+            return Err(model_load(
+                shard_path,
+                format!(
+                    "index maps tensor '{missing}' to this shard, but the shard header does not contain it"
+                ),
+            ));
+        }
+
+        tensors.extend(
+            shard
+                .tensors
+                .into_iter()
+                .filter(|tensor| expected.contains(&tensor.name)),
+        );
+    }
+
+    Ok(build_manifest(
+        "hf_index", index_file, shards, metadata, tensors,
+    ))
 }
 
 fn inspect_shards(
@@ -165,7 +215,11 @@ fn inspect_shards(
 
     for shard_path in &shards {
         let shard = inspect_shard(shard_path, root)?;
-        metadata.extend(shard.metadata);
+        merge_shard_metadata(
+            &mut metadata,
+            &relative_path(shard_path, root),
+            shard.metadata,
+        );
         tensors.extend(shard.tensors);
     }
 
@@ -188,22 +242,12 @@ fn build_manifest(
     });
     let router_tensors = tensors
         .iter()
-        .filter(|tensor| {
-            tensor
-                .labels
-                .iter()
-                .any(|label| label == "moe_router_candidate")
-        })
+        .filter(|tensor| tensor.labels.contains(&"moe_router_candidate"))
         .map(|tensor| tensor.name.clone())
         .collect();
     let expert_tensors = tensors
         .iter()
-        .filter(|tensor| {
-            tensor
-                .labels
-                .iter()
-                .any(|label| label == "moe_expert_candidate")
-        })
+        .filter(|tensor| tensor.labels.contains(&"moe_expert_candidate"))
         .map(|tensor| tensor.name.clone())
         .collect();
 
@@ -332,18 +376,30 @@ fn parse_header(
                 format!("tensor '{name}' data_offsets are reversed"),
             ));
         }
-        if u64::try_from(end).map_or(true, |end| end > data_len) {
+        if end as u64 > data_len {
             return Err(model_load(
                 path,
                 format!("tensor '{name}' extends beyond Safetensors data section"),
             ));
+        }
+        let byte_size = end - start;
+        match expected_tensor_byte_size(&dtype, &shape, path, name)? {
+            Some(expected) if expected != byte_size => {
+                return Err(model_load(
+                    path,
+                    format!(
+                        "tensor '{name}' byte size mismatch: shape/dtype imply {expected} bytes, data_offsets span {byte_size} bytes"
+                    ),
+                ));
+            }
+            _ => {}
         }
 
         tensors.push(SafetensorsTensorRecord {
             name: name.clone(),
             dtype,
             shape: shape.clone(),
-            byte_size: end - start,
+            byte_size,
             source_shard: source_shard.clone(),
             data_offsets: [start, end],
             labels: classify_tensor(name, &shape),
@@ -353,7 +409,7 @@ fn parse_header(
     Ok(ShardInspection { metadata, tensors })
 }
 
-fn classify_tensor(name: &str, shape: &[usize]) -> Vec<String> {
+fn classify_tensor(name: &str, shape: &[usize]) -> Vec<&'static str> {
     let lower = name.to_ascii_lowercase();
     let mut labels = Vec::new();
 
@@ -368,47 +424,204 @@ fn classify_tensor(name: &str, shape: &[usize]) -> Vec<String> {
             .min()
             .is_some_and(|v| (2..=512).contains(&v))
         && shape.iter().copied().max().is_some_and(|v| v >= 512);
-    if router_name || router_shape {
-        labels.push("moe_router_candidate".to_string());
+    if router_name {
+        labels.push("moe_router_candidate");
+    } else if router_shape {
+        labels.push("possible_moe_router_shape");
     }
 
-    let expert_name = lower.contains("expert")
-        || lower.contains("gate_proj")
+    let has_expert_context = lower.contains("experts")
+        || lower.contains(".expert")
+        || lower.contains("/expert")
+        || lower.contains("block_sparse_moe.experts");
+    let expert_weight_name = lower.contains("gate_proj")
         || lower.contains("up_proj")
         || lower.contains("down_proj")
         || lower.contains(".w1.")
         || lower.contains(".w2.")
         || lower.contains(".w3.");
+    let expert_name = has_expert_context && expert_weight_name;
     if expert_name {
-        labels.push("moe_expert_candidate".to_string());
+        labels.push("moe_expert_candidate");
     }
 
     labels
 }
 
 fn read_index(path: &Path) -> Result<RawIndex> {
+    let len = fs::metadata(path)
+        .map_err(|e| model_load(path, e.to_string()))?
+        .len();
+    if len > MAX_INDEX_BYTES {
+        return Err(model_load(
+            path,
+            format!("Safetensors index is {len} bytes, exceeding limit {MAX_INDEX_BYTES}"),
+        ));
+    }
     let bytes = fs::read(path).map_err(|e| model_load(path, e.to_string()))?;
     serde_json::from_slice(&bytes).map_err(|e| model_load(path, format!("parse index JSON: {e}")))
 }
 
 fn find_index_file(root: &Path) -> Result<Option<PathBuf>> {
-    let mut candidates = fs::read_dir(root)
-        .map_err(|e| model_load(root, e.to_string()))?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+    let mut candidates = read_dir_paths(root)?
+        .into_iter()
         .filter(|path| is_safetensors_index(path))
         .collect::<Vec<_>>();
     candidates.sort();
-    Ok(candidates.into_iter().next())
+    if candidates.len() > 1 {
+        let names = candidates
+            .iter()
+            .map(|path| relative_path(path, root))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(HybridError::UnsupportedFormat(format!(
+            "multiple Safetensors index files found in '{}': {names}; pass the intended index file explicitly",
+            root.display()
+        )));
+    }
+    Ok(candidates.pop())
 }
 
 fn list_safetensors_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut shards = fs::read_dir(root)
-        .map_err(|e| model_load(root, e.to_string()))?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+    let mut shards = read_dir_paths(root)?
+        .into_iter()
         .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some(SAFETENSORS_EXTENSION))
-        .collect::<Vec<_>>();
+        .map(|path| validate_path_stays_under_root(root, &path).map(|()| path))
+        .collect::<Result<Vec<_>>>()?;
     shards.sort();
     Ok(shards)
+}
+
+fn read_dir_paths(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(root).map_err(|e| model_load(root, e.to_string()))? {
+        let entry = entry.map_err(|e| model_load(root, format!("read directory entry: {e}")))?;
+        paths.push(entry.path());
+    }
+    Ok(paths)
+}
+
+fn expected_tensor_byte_size(
+    dtype: &str,
+    shape: &[usize],
+    path: &Path,
+    tensor_name: &str,
+) -> Result<Option<usize>> {
+    let Some(element_size) = dtype_size_bytes(dtype) else {
+        return Ok(None);
+    };
+    let elements = shape.iter().try_fold(1usize, |acc, dim| {
+        acc.checked_mul(*dim).ok_or_else(|| {
+            model_load(
+                path,
+                format!("tensor '{tensor_name}' shape element count overflow"),
+            )
+        })
+    })?;
+    elements
+        .checked_mul(element_size)
+        .map(Some)
+        .ok_or_else(|| model_load(path, format!("tensor '{tensor_name}' byte size overflow")))
+}
+
+fn dtype_size_bytes(dtype: &str) -> Option<usize> {
+    match dtype {
+        "F64" | "I64" | "U64" => Some(8),
+        "F32" | "I32" | "U32" => Some(4),
+        "F16" | "BF16" | "I16" | "U16" => Some(2),
+        "F8_E5M2" | "F8_E4M3" | "I8" | "U8" | "BOOL" => Some(1),
+        _ => None,
+    }
+}
+
+fn merge_shard_metadata(
+    metadata: &mut BTreeMap<String, String>,
+    shard_path: &str,
+    shard_metadata: BTreeMap<String, String>,
+) {
+    for (key, value) in shard_metadata {
+        match metadata.get(&key) {
+            None => {
+                metadata.insert(key, value);
+            }
+            Some(existing) if existing == &value => {}
+            Some(_) => {
+                metadata.insert(format!("shard:{shard_path}:{key}"), value);
+            }
+        }
+    }
+}
+
+fn reject_output_checkpoint_conflict(
+    checkpoint_path: &Path,
+    output_path: &Path,
+    manifest: &SafetensorsManifest,
+) -> Result<()> {
+    let output = canonical_existing_or_parent(output_path)?;
+    let input_metadata = fs::metadata(checkpoint_path)
+        .map_err(|e| model_load(checkpoint_path, format!("stat checkpoint input: {e}")))?;
+    let root = if input_metadata.is_dir() {
+        checkpoint_path
+    } else {
+        checkpoint_path.parent().unwrap_or_else(|| Path::new("."))
+    };
+
+    let mut checkpoint_files = BTreeSet::new();
+    if input_metadata.is_file() {
+        checkpoint_files.insert(checkpoint_path.to_path_buf());
+    }
+    if let Some(index_file) = &manifest.checkpoint.index_file {
+        checkpoint_files.insert(root.join(index_file));
+    }
+    for tensor in &manifest.tensors {
+        checkpoint_files.insert(root.join(&tensor.source_shard));
+    }
+
+    for checkpoint_file in checkpoint_files {
+        if checkpoint_file.exists()
+            && fs::canonicalize(&checkpoint_file).map_err(|e| {
+                model_load(
+                    &checkpoint_file,
+                    format!("canonicalize checkpoint file for output conflict check: {e}"),
+                )
+            })? == output
+        {
+            return Err(model_load(
+                output_path,
+                "manifest output path must not overwrite a Safetensors checkpoint or index file"
+                    .into(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn canonical_existing_or_parent(path: &Path) -> Result<PathBuf> {
+    if path.exists() {
+        return fs::canonicalize(path).map_err(|e| model_load(path, e.to_string()));
+    }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path.file_name().ok_or_else(|| {
+        model_load(
+            path,
+            "manifest output path must include a file name".to_string(),
+        )
+    })?;
+    let parent = fs::canonicalize(parent).map_err(|e| model_load(parent, e.to_string()))?;
+    Ok(parent.join(file_name))
+}
+
+fn validate_path_stays_under_root(root: &Path, path: &Path) -> Result<()> {
+    let canonical_root = fs::canonicalize(root).map_err(|e| model_load(root, e.to_string()))?;
+    let canonical_path = fs::canonicalize(path).map_err(|e| model_load(path, e.to_string()))?;
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err(model_load(
+            path,
+            "Safetensors shard path must stay within the checkpoint directory".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn is_safetensors_index(path: &Path) -> bool {
@@ -432,13 +645,15 @@ fn index_shard_path(root: &Path, index_path: &Path, relative: &str) -> Result<Pa
             format!("index shard path '{relative}' must stay within the checkpoint directory"),
         ));
     }
-    Ok(root.join(relative_path))
+    let candidate = root.join(relative_path);
+    validate_path_stays_under_root(root, &candidate)?;
+    Ok(candidate)
 }
 
-fn stringify_metadata(metadata: BTreeMap<String, Value>) -> BTreeMap<String, String> {
+fn stringify_metadata(prefix: &str, metadata: BTreeMap<String, Value>) -> BTreeMap<String, String> {
     metadata
         .into_iter()
-        .map(|(key, value)| (key, stringify_json_value(&value)))
+        .map(|(key, value)| (format!("{prefix}:{key}"), stringify_json_value(&value)))
         .collect()
 }
 
@@ -479,9 +694,32 @@ fn model_load(path: &Path, reason: String) -> HybridError {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::ops::Deref;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn temp_dir(name: &str) -> PathBuf {
+    struct TestDir(PathBuf);
+
+    impl Deref for TestDir {
+        type Target = Path;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for TestDir {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn temp_dir(name: &str) -> TestDir {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -491,7 +729,7 @@ mod tests {
             std::process::id()
         ));
         fs::create_dir_all(&path).unwrap();
-        path
+        TestDir(path)
     }
 
     fn write_safetensors(path: &Path, header: &str, data_len: usize) {
@@ -528,8 +766,6 @@ mod tests {
         assert_eq!(manifest.tensors[0].source_shard, "model.safetensors");
         assert_eq!(manifest.candidates.router_tensors.len(), 1);
         assert_eq!(manifest.candidates.expert_tensors.len(), 1);
-
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -567,14 +803,16 @@ mod tests {
         );
         assert_eq!(manifest.checkpoint.shard_count, 2);
         assert_eq!(
-            manifest.checkpoint.metadata.get("total_size").unwrap(),
+            manifest
+                .checkpoint
+                .metadata
+                .get("index:total_size")
+                .unwrap(),
             "65544"
         );
         assert_eq!(manifest.tensors[0].name, "a.router.weight");
         assert_eq!(manifest.tensors[1].name, "z.weight");
         assert_eq!(manifest.candidates.router_tensors, vec!["a.router.weight"]);
-
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -592,8 +830,6 @@ mod tests {
             err.to_string()
                 .contains("extends beyond Safetensors data section")
         );
-
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -614,7 +850,122 @@ mod tests {
             err.to_string()
                 .contains("must stay within the checkpoint directory")
         );
+    }
 
-        fs::remove_dir_all(dir).unwrap();
+    #[cfg(unix)]
+    #[test]
+    fn rejects_index_shard_paths_that_escape_via_symlink() {
+        let dir = temp_dir("symlink");
+        let outside = temp_dir("outside");
+        let outside_shard = outside.join("outside.safetensors");
+        write_safetensors(
+            &outside_shard,
+            r#"{"a.weight": {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]}}"#,
+            2,
+        );
+        std::os::unix::fs::symlink(&outside_shard, dir.join("link.safetensors")).unwrap();
+        fs::write(
+            dir.join("model.safetensors.index.json"),
+            r#"{
+                "weight_map": {
+                    "a.weight": "link.safetensors"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let err = inspect_safetensors_checkpoint(&dir).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("must stay within the checkpoint directory")
+        );
+    }
+
+    #[test]
+    fn rejects_multiple_directory_indexes() {
+        let dir = temp_dir("multiple-indexes");
+        fs::write(
+            dir.join("a.safetensors.index.json"),
+            r#"{"weight_map": {}}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("b.safetensors.index.json"),
+            r#"{"weight_map": {}}"#,
+        )
+        .unwrap();
+
+        let err = inspect_safetensors_checkpoint(&dir).unwrap_err();
+        assert!(err.to_string().contains("multiple Safetensors index files"));
+    }
+
+    #[test]
+    fn hf_index_filters_extra_tensors_and_requires_mapped_tensors() {
+        let dir = temp_dir("index-filter");
+        let shard = dir.join("model-00001-of-00001.safetensors");
+        write_safetensors(
+            &shard,
+            r#"{
+                "a.router.weight": {"dtype": "F32", "shape": [8, 2048], "data_offsets": [0, 65536]},
+                "stale.router.weight": {"dtype": "F32", "shape": [8, 2048], "data_offsets": [65536, 131072]}
+            }"#,
+            131_072,
+        );
+        let index = dir.join("model.safetensors.index.json");
+        fs::write(
+            &index,
+            r#"{"weight_map": {"a.router.weight": "model-00001-of-00001.safetensors"}}"#,
+        )
+        .unwrap();
+
+        let manifest = inspect_safetensors_checkpoint(&dir).unwrap();
+        assert_eq!(manifest.checkpoint.tensor_count, 1);
+        assert_eq!(manifest.tensors[0].name, "a.router.weight");
+
+        fs::write(
+            &index,
+            r#"{"weight_map": {"missing.weight": "model-00001-of-00001.safetensors"}}"#,
+        )
+        .unwrap();
+        let err = inspect_safetensors_checkpoint(&dir).unwrap_err();
+        assert!(err.to_string().contains("does not contain it"));
+    }
+
+    #[test]
+    fn rejects_shape_dtype_byte_size_mismatch() {
+        let dir = temp_dir("byte-size");
+        let path = dir.join("bad.safetensors");
+        write_safetensors(
+            &path,
+            r#"{"bad.weight": {"dtype": "F16", "shape": [4], "data_offsets": [0, 4]}}"#,
+            4,
+        );
+
+        let err = inspect_safetensors_checkpoint(&path).unwrap_err();
+        assert!(err.to_string().contains("byte size mismatch"));
+    }
+
+    #[test]
+    fn rejects_manifest_output_that_overwrites_checkpoint_file() {
+        let dir = temp_dir("output-conflict");
+        let path = dir.join("model.safetensors");
+        write_safetensors(
+            &path,
+            r#"{"a.weight": {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]}}"#,
+            2,
+        );
+
+        let err = write_safetensors_manifest(&path, &path).unwrap_err();
+        assert!(err.to_string().contains("must not overwrite"));
+    }
+
+    #[test]
+    fn generic_dense_ffn_names_are_not_moe_expert_candidates() {
+        let labels = classify_tensor("model.layers.0.mlp.gate_proj.weight", &[4096, 2048]);
+        assert!(!labels.contains(&"moe_expert_candidate"));
+
+        let labels = classify_tensor("model.layers.0.block_sparse_moe.gate.weight", &[8, 2048]);
+        assert!(labels.contains(&"moe_router_candidate"));
+        assert!(!labels.contains(&"moe_expert_candidate"));
     }
 }

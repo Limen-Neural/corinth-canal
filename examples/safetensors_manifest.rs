@@ -9,27 +9,27 @@
 use corinth_canal::moe::safetensors::write_safetensors_manifest;
 use std::path::PathBuf;
 
+const USAGE: &str =
+    "usage: safetensors_manifest <checkpoint.safetensors|index.json|directory> <output.json>";
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
-    let checkpoint_path = args.next().map(PathBuf::from).ok_or_else(|| {
-        "usage: safetensors_manifest <checkpoint.safetensors|index.json|directory> <output.json>"
-            .to_string()
-    })?;
-    let output_path = args.next().map(PathBuf::from).ok_or_else(|| {
-        "usage: safetensors_manifest <checkpoint.safetensors|index.json|directory> <output.json>"
-            .to_string()
-    })?;
+    let checkpoint_path = args
+        .next()
+        .map(PathBuf::from)
+        .ok_or_else(|| USAGE.to_string())?;
+    let output_path = args
+        .next()
+        .map(PathBuf::from)
+        .ok_or_else(|| USAGE.to_string())?;
     if args.next().is_some() {
-        return Err(
-            "usage: safetensors_manifest <checkpoint.safetensors|index.json|directory> <output.json>"
-                .into(),
-        );
+        return Err(USAGE.into());
     }
 
-    if let Some(parent) = output_path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)?;
+    if let Some(parent) = output_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
     }
 
     let manifest = write_safetensors_manifest(&checkpoint_path, &output_path)?;
