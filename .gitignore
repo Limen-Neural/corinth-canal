@@ -17,6 +17,12 @@ Thumbs.db
 # Debug
 *.log
 
+# Coverage reports
+lcov.info
+*.profraw
+*.profdata
+coverage/
+
 # Agent notes
 
 # Local Kilo planning scratch
