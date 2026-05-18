@@ -20,6 +20,9 @@ use std::path::{Component, Path, PathBuf};
 const SAFETENSORS_EXTENSION: &str = "safetensors";
 const MAX_HEADER_BYTES: usize = 64 * 1024 * 1024;
 const MAX_INDEX_BYTES: u64 = 64 * 1024 * 1024;
+/// Unambiguous boundary between shard relative path and logical metadata key in
+/// `shard:*` manifest keys (avoids ambiguity when the logical key contains `:`).
+const SHARD_METADATA_KEY_SEP: char = '\u{001e}';
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SafetensorsManifest {
@@ -165,10 +168,13 @@ fn inspect_index(root: &Path, index_path: &Path) -> Result<SafetensorsManifest> 
         .map(|path| relative_path(&path, root))
         .collect::<Vec<_>>();
     if !unreferenced_shards.is_empty() {
-        metadata.insert(
-            "index:unreferenced_shards".into(),
-            unreferenced_shards.join(","),
-        );
+        let encoded = serde_json::to_string(&unreferenced_shards).map_err(|e| {
+            model_load(
+                index_path,
+                format!("serialize index:unreferenced_shards list: {e}"),
+            )
+        })?;
+        metadata.insert("index:unreferenced_shards".into(), encoded);
     }
     let index_file = Some(relative_path(index_path, root));
     inspect_index_shards(root, index_file, shards, expected_by_shard, metadata)
@@ -626,13 +632,27 @@ fn dtype_size_bytes(dtype: &str) -> Option<usize> {
     }
 }
 
+fn shard_metadata_namespaced_key(shard_path: &str, key: &str) -> String {
+    format!("shard:{shard_path}{SHARD_METADATA_KEY_SEP}{key}")
+}
+
+fn namespaced_shard_metadata_logical_key(namespaced: &str) -> Option<&str> {
+    let rest = namespaced.strip_prefix("shard:")?;
+    if let Some((_, logical_key)) = rest.split_once(SHARD_METADATA_KEY_SEP) {
+        return Some(logical_key);
+    }
+    // Legacy keys used `shard:{path}:{key}` with a single `:` separator; this
+    // remains ambiguous when `key` contains `:`, so prefer new keys above.
+    rest.rsplit_once(':').map(|(_, logical_key)| logical_key)
+}
+
 fn merge_shard_metadata(
     metadata: &mut BTreeMap<String, String>,
     shard_path: &str,
     shard_metadata: BTreeMap<String, String>,
 ) {
     for (key, value) in shard_metadata {
-        let namespaced_key = format!("shard:{shard_path}:{key}");
+        let namespaced_key = shard_metadata_namespaced_key(shard_path, &key);
         match metadata.get(&key) {
             None => {
                 if !has_shard_metadata_key(metadata, &key) {
@@ -652,12 +672,20 @@ fn merge_shard_metadata(
 }
 
 fn has_shard_metadata_key(metadata: &BTreeMap<String, String>, key: &str) -> bool {
-    metadata.keys().any(|existing| {
-        existing
-            .strip_prefix("shard:")
-            .and_then(|rest| rest.rsplit_once(':'))
-            .is_some_and(|(_, shard_key)| shard_key == key)
-    })
+    metadata
+        .keys()
+        .any(|existing| namespaced_shard_metadata_logical_key(existing).is_some_and(|k| k == key))
+}
+
+fn parse_unreferenced_shards_metadata(encoded: &str) -> Vec<String> {
+    if let Ok(paths) = serde_json::from_str::<Vec<String>>(encoded) {
+        return paths;
+    }
+    encoded
+        .split(',')
+        .filter(|shard| !shard.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn reject_output_checkpoint_conflict(
@@ -689,10 +717,7 @@ fn reject_output_checkpoint_conflict(
         .metadata
         .get("index:unreferenced_shards")
     {
-        for shard in unreferenced_shards
-            .split(',')
-            .filter(|shard| !shard.is_empty())
-        {
+        for shard in parse_unreferenced_shards_metadata(unreferenced_shards) {
             checkpoint_files.insert(root.join(shard));
         }
     }
@@ -1206,7 +1231,7 @@ mod tests {
                 .metadata
                 .get("index:unreferenced_shards")
                 .map(String::as_str),
-            Some("unused.safetensors")
+            Some(r#"["unused.safetensors"]"#)
         );
 
         fs::write(
@@ -1348,7 +1373,7 @@ mod tests {
             manifest
                 .checkpoint
                 .metadata
-                .get("shard:a.safetensors:format")
+                .get(&shard_metadata_namespaced_key("a.safetensors", "format"))
                 .map(String::as_str),
             Some("pt")
         );
@@ -1356,10 +1381,61 @@ mod tests {
             manifest
                 .checkpoint
                 .metadata
-                .get("shard:b.safetensors:format")
+                .get(&shard_metadata_namespaced_key("b.safetensors", "format"))
                 .map(String::as_str),
             Some("np")
         );
+    }
+
+    #[test]
+    fn colon_in_metadata_logical_key_conflict_does_not_restore_base_key() {
+        let mut metadata = BTreeMap::new();
+        let mut first = BTreeMap::new();
+        first.insert("my:key".to_string(), "a".to_string());
+        merge_shard_metadata(&mut metadata, "x.safetensors", first);
+
+        let mut second = BTreeMap::new();
+        second.insert("my:key".to_string(), "b".to_string());
+        merge_shard_metadata(&mut metadata, "y.safetensors", second);
+
+        assert!(!metadata.contains_key("my:key"));
+
+        let mut third = BTreeMap::new();
+        third.insert("my:key".to_string(), "c".to_string());
+        merge_shard_metadata(&mut metadata, "z.safetensors", third);
+
+        assert!(!metadata.contains_key("my:key"));
+        assert_eq!(
+            metadata
+                .get(&shard_metadata_namespaced_key("z.safetensors", "my:key"))
+                .map(String::as_str),
+            Some("c")
+        );
+    }
+
+    #[test]
+    fn rejects_manifest_output_that_overwrites_unreferenced_index_shard_with_comma_in_name() {
+        let dir = temp_dir("output-unreferenced-comma");
+        let main_shard = dir.join("model-00001-of-00001.safetensors");
+        write_safetensors(
+            &main_shard,
+            r#"{"a.weight": {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]}}"#,
+            2,
+        );
+        let unreferenced = dir.join("a,b.safetensors");
+        write_safetensors(
+            &unreferenced,
+            r#"{"b.weight": {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]}}"#,
+            2,
+        );
+        fs::write(
+            dir.join("model.safetensors.index.json"),
+            r#"{"weight_map": {"a.weight": "model-00001-of-00001.safetensors"}}"#,
+        )
+        .unwrap();
+
+        let err = write_safetensors_manifest(&dir, &unreferenced).unwrap_err();
+        assert!(err.to_string().contains("must not overwrite"));
     }
 
     #[test]
