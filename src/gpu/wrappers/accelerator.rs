@@ -18,7 +18,6 @@ use super::sentry_capture::{LaunchContext, LaunchType, capture_launch_failure};
 use crate::types::TelemetrySnapshot;
 use cust::launch;
 use cust::stream::{Stream, StreamFlags};
-use tracing::warn;
 
 const SATSOLVER_BLOCK_SIZE: u32 = 256;
 const SATSOLVER_SHARED_MEM_BYTES: u32 = 0;
@@ -63,6 +62,27 @@ pub struct GpuAccelerator {
 }
 
 impl GpuAccelerator {
+    fn ptx_launch_error(
+        kernel_name: &str,
+        grid: u32,
+        block: u32,
+        shared_mem: u32,
+        neuron_count: Option<usize>,
+        error: impl std::fmt::Debug,
+    ) -> GpuError {
+        let context = LaunchContext {
+            kernel_name: kernel_name.to_string(),
+            launch_type: LaunchType::PtxFatbin,
+            grid: (grid, 1, 1),
+            block: (block, 1, 1),
+            shared_mem,
+            neuron_count,
+        };
+        let gpu_error = GpuError::LaunchFailed(format!("{kernel_name} launch: {error:?}"));
+        capture_launch_failure(context, &gpu_error, None);
+        gpu_error
+    }
+
     /// Attempt to initialise GPU.  Returns a stub if no device is available.
     pub fn new() -> Self {
         match GpuContext::init() {
@@ -73,7 +93,7 @@ impl GpuAccelerator {
                     temporal_state: None,
                 },
                 Err(e) => {
-                    warn!("[GPU] PTX load failed (CPU fallback): {e}");
+                    eprintln!("[GPU] PTX load failed (CPU fallback): {}", e);
                     Self {
                         _ctx: Some(ctx),
                         modules: None,
@@ -82,7 +102,7 @@ impl GpuAccelerator {
                 }
             },
             Err(e) => {
-                warn!("[GPU] No CUDA device (CPU fallback): {e}");
+                eprintln!("[GPU] No CUDA device (CPU fallback): {}", e);
                 Self {
                     _ctx: None,
                     modules: None,
@@ -160,19 +180,14 @@ impl GpuAccelerator {
                 state.input_current.as_device_ptr(),
                 neuron_count as i32
             ))
-            .map_err(|e| {
-                let context = LaunchContext {
-                    kernel_name: "project_snapshot_current".to_string(),
-                    launch_type: LaunchType::PtxFatbin,
-                    grid: (grid, 1, 1),
-                    block: (TEMPORAL_BLOCK_SIZE, 1, 1),
-                    shared_mem: TEMPORAL_SHARED_MEM_BYTES,
-                    neuron_count: Some(neuron_count),
-                };
-                let gpu_error = GpuError::LaunchFailed(format!("project_snapshot_current launch: {e:?}"));
-                capture_launch_failure(context, &gpu_error, None);
-                gpu_error
-            })?;
+            .map_err(|e| Self::ptx_launch_error(
+                "project_snapshot_current",
+                grid,
+                TEMPORAL_BLOCK_SIZE,
+                TEMPORAL_SHARED_MEM_BYTES,
+                Some(neuron_count),
+                e,
+            ))?;
         }
 
         stream
@@ -201,17 +216,14 @@ impl GpuAccelerator {
                 neuron_count as i32
             ))
             .map_err(|e| {
-                let context = LaunchContext {
-                    kernel_name: "lif_step".to_string(),
-                    launch_type: LaunchType::PtxFatbin,
-                    grid: (grid, 1, 1),
-                    block: (TEMPORAL_BLOCK_SIZE, 1, 1),
-                    shared_mem: TEMPORAL_SHARED_MEM_BYTES,
-                    neuron_count: Some(neuron_count),
-                };
-                let gpu_error = GpuError::LaunchFailed(format!("lif_step launch: {e:?}"));
-                capture_launch_failure(context, &gpu_error, None);
-                gpu_error
+                Self::ptx_launch_error(
+                    "lif_step",
+                    grid,
+                    TEMPORAL_BLOCK_SIZE,
+                    TEMPORAL_SHARED_MEM_BYTES,
+                    Some(neuron_count),
+                    e,
+                )
             })?;
         }
 
@@ -355,7 +367,7 @@ impl GpuAccelerator {
         let f16_weights = match state.weights_f16.as_mut() {
             Some(weights_f16) => weights_f16,
             None => {
-                state.weights_f16 = Some(GpuBuffer::<u16>::from_slice(&vec![0u16; expected])?);
+                state.weights_f16 = Some(GpuBuffer::<u16>::alloc(expected)?);
                 state
                     .weights_f16
                     .as_mut()
@@ -408,18 +420,14 @@ impl GpuAccelerator {
                         state.n_inputs as i32
                     ))
                     .map_err(|e| {
-                        let context = LaunchContext {
-                            kernel_name: "gif_step_weighted".to_string(),
-                            launch_type: LaunchType::PtxFatbin,
-                            grid: (grid, 1, 1),
-                            block: (TEMPORAL_BLOCK_SIZE, 1, 1),
-                            shared_mem: shared_bytes,
-                            neuron_count: Some(neuron_count),
-                        };
-                        let gpu_error =
-                            GpuError::LaunchFailed(format!("gif_step_weighted launch: {e:?}"));
-                        capture_launch_failure(context, &gpu_error, None);
-                        gpu_error
+                        Self::ptx_launch_error(
+                            "gif_step_weighted",
+                            grid,
+                            TEMPORAL_BLOCK_SIZE,
+                            shared_bytes,
+                            Some(neuron_count),
+                            e,
+                        )
                     })?;
                 }
                 SynapsePrecision::F16 => {
@@ -471,19 +479,14 @@ impl GpuAccelerator {
                     state.neuron_count as i32,
                     0.0f32
                 ))
-                .map_err(|e| {
-                    let context = LaunchContext {
-                        kernel_name: "reset_membrane".to_string(),
-                        launch_type: LaunchType::PtxFatbin,
-                        grid: (grid, 1, 1),
-                        block: (TEMPORAL_BLOCK_SIZE, 1, 1),
-                        shared_mem: TEMPORAL_SHARED_MEM_BYTES,
-                        neuron_count: Some(state.neuron_count),
-                    };
-                    let gpu_error = GpuError::LaunchFailed(format!("reset_membrane launch: {e:?}"));
-                    capture_launch_failure(context, &gpu_error, None);
-                    gpu_error
-                })?;
+                .map_err(|e| Self::ptx_launch_error(
+                    "reset_membrane",
+                    grid,
+                    TEMPORAL_BLOCK_SIZE,
+                    TEMPORAL_SHARED_MEM_BYTES,
+                    Some(state.neuron_count),
+                    e,
+                ))?;
             }
 
             stream
@@ -586,17 +589,14 @@ impl GpuAccelerator {
                 n_walkers,
             ))
             .map_err(|e| {
-                let context = LaunchContext {
-                    kernel_name: "satsolver_extract".to_string(),
-                    launch_type: LaunchType::PtxFatbin,
-                    grid: (grid, 1, 1),
-                    block: (block, 1, 1),
-                    shared_mem: SATSOLVER_SHARED_MEM_BYTES,
-                    neuron_count: None,
-                };
-                let gpu_error = GpuError::LaunchFailed(format!("satsolver_extract launch: {e:?}"));
-                capture_launch_failure(context, &gpu_error, None);
-                gpu_error
+                Self::ptx_launch_error(
+                    "satsolver_extract",
+                    grid,
+                    block,
+                    SATSOLVER_SHARED_MEM_BYTES,
+                    None,
+                    e,
+                )
             })?;
         }
 
@@ -733,18 +733,14 @@ impl GpuAccelerator {
                 clause_len,
             ))
             .map_err(|e| {
-                let context = LaunchContext {
-                    kernel_name: "satsolver_aux_update".to_string(),
-                    launch_type: LaunchType::PtxFatbin,
-                    grid: (grid_x, 1, 1),
-                    block: (block, 1, 1),
-                    shared_mem: SATSOLVER_SHARED_MEM_BYTES,
-                    neuron_count: None,
-                };
-                let gpu_error =
-                    GpuError::LaunchFailed(format!("satsolver_aux_update launch: {e:?}"));
-                capture_launch_failure(context, &gpu_error, None);
-                gpu_error
+                Self::ptx_launch_error(
+                    "satsolver_aux_update",
+                    grid_x,
+                    block,
+                    SATSOLVER_SHARED_MEM_BYTES,
+                    None,
+                    e,
+                )
             })?;
 
             launch!(satsolver_best_reduce_pass2<<<1u32, block, SATSOLVER_SHARED_MEM_BYTES, stream>>>(
@@ -754,19 +750,14 @@ impl GpuAccelerator {
                 best_walker.as_device_ptr(),
                 partial_len as i32,
             ))
-            .map_err(|e| {
-                let context = LaunchContext {
-                    kernel_name: "satsolver_best_reduce_pass2".to_string(),
-                    launch_type: LaunchType::PtxFatbin,
-                    grid: (1, 1, 1),
-                    block: (block, 1, 1),
-                    shared_mem: SATSOLVER_SHARED_MEM_BYTES,
-                    neuron_count: None,
-                };
-                let gpu_error = GpuError::LaunchFailed(format!("satsolver_best_reduce_pass2 launch: {e:?}"));
-                capture_launch_failure(context, &gpu_error, None);
-                gpu_error
-            })?;
+            .map_err(|e| Self::ptx_launch_error(
+                "satsolver_best_reduce_pass2",
+                1,
+                block,
+                SATSOLVER_SHARED_MEM_BYTES,
+                None,
+                e,
+            ))?;
         }
 
         stream.synchronize().map_err(|e| {
