@@ -543,11 +543,11 @@ fn reject_tensor_data_ranges(
         .collect::<Vec<_>>();
     ranges.sort_by_key(|(start, end, name)| (*start, *end, *name));
 
-format!("tensor data offset {} does not fit in usize", tensor.data_offsets[0]),
+    let mut expected_start = 0usize;
     let mut previous_name: Option<&str> = None;
     for (start, end, name) in ranges {
         if start < expected_start {
-format!("tensor data offset {} does not fit in usize", tensor.data_offsets[1]),
+            return Err(model_load(
                 path,
                 format!(
                     "tensor '{name}' data range overlaps tensor '{}'",
