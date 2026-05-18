@@ -7,7 +7,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 use super::error::{GpuError, GpuResult};
-use super::sentry_capture::{LaunchContext, LaunchType, capture_launch_failure};
+use super::sentry_capture::{capture_launch_failure, LaunchContext, LaunchType};
 use cust::memory::{DeviceCopy, DevicePointer};
 use cust::stream::Stream;
 use std::ffi::c_void;

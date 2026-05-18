@@ -14,7 +14,7 @@ use super::error::{GpuError, GpuResult};
 use super::ffi;
 use super::kernel::KernelModule;
 use super::memory::GpuBuffer;
-use super::sentry_capture::{LaunchContext, LaunchType, capture_launch_failure};
+use super::sentry_capture::{capture_launch_failure, LaunchContext, LaunchType};
 use crate::types::TelemetrySnapshot;
 use cust::launch;
 use cust::stream::{Stream, StreamFlags};

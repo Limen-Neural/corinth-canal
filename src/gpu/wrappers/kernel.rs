@@ -18,7 +18,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 use super::error::{GpuError, GpuResult};
-use super::sentry_capture::{LaunchContext, LaunchType, capture_launch_failure};
+use super::sentry_capture::{capture_launch_failure, LaunchContext, LaunchType};
 use cust::function::Function;
 use cust::module::Module;
 use cust::sys as cuda;
