@@ -446,8 +446,7 @@ fn classify_tensor(name: &str, shape: &[usize]) -> Vec<&'static str> {
 
     let has_expert_context = lower.contains("experts")
         || lower.contains(".expert")
-        || lower.contains("/expert")
-        || lower.contains("block_sparse_moe.experts");
+        || lower.contains("/expert");
     let expert_weight_name = lower.contains("gate_proj")
         || lower.contains("up_proj")
         || lower.contains("down_proj")
