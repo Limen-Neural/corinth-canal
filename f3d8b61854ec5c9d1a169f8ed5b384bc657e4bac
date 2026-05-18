@@ -1,0 +1,2 @@
+{"id":"7cf0331c-e8a7-4c4c-a305-904c60d8653b","ts":"2026-05-18T22:51:18.947Z","version":"1.0.2","toolName":"apply_diff","taskID":"80491e17-811f-4e1d-b915-7b0a3527dea5","path":"src/gpu/wrappers/kernel.rs","numLinesApplied":2,"currentRange":{"startLine":153,"endLine":154}}
+{"id":"9d3c57e5-98f1-4b02-b4b0-a067a0b2c192","ts":"2026-05-18T22:51:32.609Z","version":"1.0.2","toolName":"apply_diff","taskID":"80491e17-811f-4e1d-b915-7b0a3527dea5","path":"src/gpu/wrappers/kernel.rs","numLinesApplied":2,"currentRange":{"startLine":153,"endLine":154}}
