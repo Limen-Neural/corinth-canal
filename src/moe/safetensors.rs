@@ -359,7 +359,6 @@ fn classify_tensor(name: &str, shape: &[usize]) -> Vec<String> {
 
     let router_name = lower.contains("router")
         || lower.contains("gate_inp")
-        || lower.contains("ffn_gate_inp")
         || lower.ends_with(".gate.weight")
         || lower.ends_with("/gate/weight");
     let router_shape = shape.len() == 2
@@ -374,7 +373,6 @@ fn classify_tensor(name: &str, shape: &[usize]) -> Vec<String> {
     }
 
     let expert_name = lower.contains("expert")
-        || lower.contains("block_sparse_moe.experts")
         || lower.contains("gate_proj")
         || lower.contains("up_proj")
         || lower.contains("down_proj")
