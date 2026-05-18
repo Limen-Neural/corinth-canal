@@ -641,7 +641,7 @@ fn dtype_size_bytes(dtype: &str) -> Option<usize> {
     match dtype {
         "C128" => Some(16),
         "F64" | "I64" | "U64" | "C64" => Some(8),
-        "F32" | "I32" | "U32" => Some(4),
+        "F32" | "TF32" | "I32" | "U32" => Some(4),
         "F16" | "BF16" | "I16" | "U16" => Some(2),
         "F8_E5M2" | "F8_E4M3" | "F8_E8M0" | "I8" | "U8" | "BOOL" => Some(1),
         _ => None,
