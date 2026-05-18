@@ -75,7 +75,7 @@ pub fn inspect_safetensors_checkpoint(path: impl AsRef<Path>) -> Result<Safetens
     }
 
     if is_safetensors_index(input) {
-        let root = input.parent().unwrap_or_else(|| Path::new("."));
+        let root = parent_or_current(input);
         return inspect_index(root, input);
     }
 
@@ -110,7 +110,7 @@ pub fn write_safetensors_manifest(
 }
 
 fn inspect_single_file(path: &Path) -> Result<SafetensorsManifest> {
-    let root = path.parent().unwrap_or_else(|| Path::new("."));
+    let root = parent_or_current(path);
     let shard = inspect_shard(path, root)?;
     Ok(build_manifest(
         "single_file",
@@ -151,6 +151,18 @@ fn inspect_index(root: &Path, index_path: &Path) -> Result<SafetensorsManifest> 
 
     let mut metadata = stringify_metadata("index", raw.metadata);
     metadata.insert("index_tensor_count".into(), index_tensor_count.to_string());
+    let indexed_shards = shards.iter().cloned().collect::<BTreeSet<_>>();
+    let unreferenced_shards = list_safetensors_files(root)?
+        .into_iter()
+        .filter(|path| !indexed_shards.contains(path))
+        .map(|path| relative_path(&path, root))
+        .collect::<Vec<_>>();
+    if !unreferenced_shards.is_empty() {
+        metadata.insert(
+            "index:unreferenced_shards".into(),
+            unreferenced_shards.join(","),
+        );
+    }
     let index_file = Some(relative_path(index_path, root));
     inspect_index_shards(root, index_file, shards, expected_by_shard, metadata)
 }
@@ -406,6 +418,8 @@ fn parse_header(
         });
     }
 
+    reject_overlapping_tensor_ranges(path, &tensors)?;
+
     Ok(ShardInspection { metadata, tensors })
 }
 
@@ -463,10 +477,12 @@ fn read_index(path: &Path) -> Result<RawIndex> {
 }
 
 fn find_index_file(root: &Path) -> Result<Option<PathBuf>> {
-    let mut candidates = read_dir_paths(root)?
-        .into_iter()
-        .filter(|path| is_safetensors_index(path))
-        .collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+    for path in read_dir_paths(root)? {
+        if is_safetensors_index(&path) && is_regular_file(&path)? {
+            candidates.push(path);
+        }
+    }
     candidates.sort();
     if candidates.len() > 1 {
         let names = candidates
@@ -483,13 +499,57 @@ fn find_index_file(root: &Path) -> Result<Option<PathBuf>> {
 }
 
 fn list_safetensors_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut shards = read_dir_paths(root)?
-        .into_iter()
-        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some(SAFETENSORS_EXTENSION))
-        .map(|path| validate_path_stays_under_root(root, &path).map(|()| path))
-        .collect::<Result<Vec<_>>>()?;
+    let mut shards = Vec::new();
+    for path in read_dir_paths(root)? {
+        if path.extension().and_then(|ext| ext.to_str()) != Some(SAFETENSORS_EXTENSION) {
+            continue;
+        }
+        if !is_regular_file(&path)? {
+            continue;
+        }
+        validate_path_stays_under_root(root, &path)?;
+        shards.push(path);
+    }
     shards.sort();
     Ok(shards)
+}
+
+fn is_regular_file(path: &Path) -> Result<bool> {
+    fs::metadata(path)
+        .map(|metadata| metadata.is_file())
+        .map_err(|e| model_load(path, e.to_string()))
+}
+
+fn reject_overlapping_tensor_ranges(
+    path: &Path,
+    tensors: &[SafetensorsTensorRecord],
+) -> Result<()> {
+    let mut ranges = tensors
+        .iter()
+        .map(|tensor| {
+            (
+                tensor.data_offsets[0],
+                tensor.data_offsets[1],
+                tensor.name.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    ranges.sort_by_key(|(start, end, name)| (*start, *end, *name));
+
+    let mut previous: Option<(usize, usize, &str)> = None;
+    for (start, end, name) in ranges {
+        if let Some((_, previous_end, previous_name)) = previous
+            && start < previous_end
+        {
+            return Err(model_load(
+                path,
+                format!("tensor '{name}' data range overlaps tensor '{previous_name}'"),
+            ));
+        }
+        previous = Some((start, end, name));
+    }
+
+    Ok(())
 }
 
 fn read_dir_paths(root: &Path) -> Result<Vec<PathBuf>> {
@@ -563,7 +623,7 @@ fn reject_output_checkpoint_conflict(
     let root = if input_metadata.is_dir() {
         checkpoint_path
     } else {
-        checkpoint_path.parent().unwrap_or_else(|| Path::new("."))
+        parent_or_current(checkpoint_path)
     };
 
     let mut checkpoint_files = BTreeSet::new();
@@ -601,7 +661,7 @@ fn canonical_existing_or_parent(path: &Path) -> Result<PathBuf> {
     if path.exists() {
         return fs::canonicalize(path).map_err(|e| model_load(path, e.to_string()));
     }
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = parent_or_current(path);
     let file_name = path.file_name().ok_or_else(|| {
         model_load(
             path,
@@ -622,6 +682,12 @@ fn validate_path_stays_under_root(root: &Path, path: &Path) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn parent_or_current(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
 }
 
 fn is_safetensors_index(path: &Path) -> bool {
@@ -911,6 +977,11 @@ mod tests {
             }"#,
             131_072,
         );
+        write_safetensors(
+            &dir.join("unused.safetensors"),
+            r#"{"unused.weight": {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]}}"#,
+            2,
+        );
         let index = dir.join("model.safetensors.index.json");
         fs::write(
             &index,
@@ -921,6 +992,14 @@ mod tests {
         let manifest = inspect_safetensors_checkpoint(&dir).unwrap();
         assert_eq!(manifest.checkpoint.tensor_count, 1);
         assert_eq!(manifest.tensors[0].name, "a.router.weight");
+        assert_eq!(
+            manifest
+                .checkpoint
+                .metadata
+                .get("index:unreferenced_shards")
+                .map(String::as_str),
+            Some("unused.safetensors")
+        );
 
         fs::write(
             &index,
@@ -943,6 +1022,48 @@ mod tests {
 
         let err = inspect_safetensors_checkpoint(&path).unwrap_err();
         assert!(err.to_string().contains("byte size mismatch"));
+    }
+
+    #[test]
+    fn rejects_overlapping_tensor_ranges() {
+        let dir = temp_dir("overlap");
+        let path = dir.join("bad.safetensors");
+        write_safetensors(
+            &path,
+            r#"{
+                "a.weight": {"dtype": "F16", "shape": [4], "data_offsets": [0, 8]},
+                "b.weight": {"dtype": "F16", "shape": [4], "data_offsets": [4, 12]}
+            }"#,
+            12,
+        );
+
+        let err = inspect_safetensors_checkpoint(&path).unwrap_err();
+        assert!(err.to_string().contains("data range overlaps"));
+    }
+
+    #[test]
+    fn directory_scan_ignores_non_file_safetensors_entries() {
+        let dir = temp_dir("non-file-entry");
+        fs::create_dir(dir.join("scratch.safetensors")).unwrap();
+        write_safetensors(
+            &dir.join("model.safetensors"),
+            r#"{"a.weight": {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]}}"#,
+            2,
+        );
+
+        let manifest = inspect_safetensors_checkpoint(&dir).unwrap();
+        assert_eq!(manifest.checkpoint.shard_count, 1);
+        assert_eq!(manifest.checkpoint.tensor_count, 1);
+        assert_eq!(manifest.tensors[0].source_shard, "model.safetensors");
+    }
+
+    #[test]
+    fn bare_paths_resolve_parent_as_current_directory() {
+        assert_eq!(
+            parent_or_current(Path::new("model.safetensors")),
+            Path::new(".")
+        );
+        assert!(canonical_existing_or_parent(Path::new("manifest.json")).is_ok());
     }
 
     #[test]
