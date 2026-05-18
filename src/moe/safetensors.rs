@@ -374,7 +374,7 @@ fn classify_tensor(name: &str, shape: &[usize]) -> Vec<String> {
     }
 
     let expert_name = lower.contains("expert")
-        || lower.contains("block_sparse_moe")
+        || lower.contains("block_sparse_moe.experts")
         || lower.contains("gate_proj")
         || lower.contains("up_proj")
         || lower.contains("down_proj")
