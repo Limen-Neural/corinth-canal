@@ -488,6 +488,7 @@ impl MappedGgufCheckpoint {
     /// Iterates over every row of the tensor and applies the Q5_K
     /// block-scale dequantization, producing `dims[0] * dims[1]` output
     /// elements laid out row-major. `dims[0]` must be divisible by 256.
+    #[allow(dead_code)]
     pub(super) fn dequantize_q5_k_tensor(&self, name: &str, path: &str) -> Result<Vec<f32>> {
         let info = self.tensor_info(name, path)?.clone();
         if info.ggml_type != GGML_TYPE_Q5_K {

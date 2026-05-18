@@ -369,6 +369,7 @@ impl OlmoeRouter {
 
     /// Dequantize the named Q5_K tensor to a flat `Vec<f32>` that can be
     /// passed to [`GpuAccelerator::load_synapse_weights_named`].
+    #[allow(dead_code)]
     pub(crate) fn dequantized_q5_k_synapse_weights(&self, tensor_name: &str) -> Result<Vec<f32>> {
         let checkpoint = self
             .checkpoint
@@ -383,6 +384,7 @@ impl OlmoeRouter {
     /// `(src_rows, src_cols)` matching the row-major layout produced by
     /// [`Self::dequantized_q8_0_synapse_weights`] / [`Self::dequantized_q5_k_synapse_weights`]:
     /// `dims[0]` contiguous elements per row, `dims[1]` row count (or one row if 1-D).
+    #[allow(dead_code)]
     pub(crate) fn synapse_tensor_row_major_shape(
         &self,
         tensor_name: &str,
