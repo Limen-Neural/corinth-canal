@@ -4,10 +4,12 @@
 //! - `moe/checkpoint.rs` for GGUF parsing + mapped tensor access
 //! - `moe/adapter.rs` for model-family detection and tensor selection
 //! - `moe/routing.rs` for routing math and embedding resampling
+//! - `moe/safetensors.rs` for Safetensors header inspection and manifests
 
 mod adapter;
 mod checkpoint;
 mod routing;
+pub mod safetensors;
 
 use self::adapter::{ModelAdapter, SynapseSource, resolve_adapter};
 use self::checkpoint::{

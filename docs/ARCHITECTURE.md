@@ -107,6 +107,7 @@ Instrumented launch sites:
 | `src/moe/checkpoint.rs` | GGUF parse, mmap, tensor slicing, dequantization helpers |
 | `src/moe/adapter.rs` | Model-family adapter resolution and tensor selection |
 | `src/moe/routing.rs` | Router math (gate scores, resampling, normalization, top-k) |
+| `src/moe/safetensors.rs` | Safetensors header inspection and deterministic manifest generation |
 | `src/projector.rs` | `ProjectionMode` spike-to-embedding projection |
 | `src/funnel.rs` | Telemetry funnel, signed split banks, GIF hidden layer |
 | `src/telemetry.rs` | `TelemetryEncoder` and `TelemetrySnapshot` bridge |
@@ -116,7 +117,9 @@ Instrumented launch sites:
 
 ## Model loading and routing bridge
 
-The model-loading interface is custom and GGUF-backed.
+The runtime model-loading interface is custom and GGUF-backed. Safetensors are
+supported as an inspection/import surface for checkpoint anatomy manifests; they
+do not replace GGUF-backed routing in the current runtime path.
 
 Important nuance: the adapter chooses the GPU synapse path from the selected
 tensor's actual `ggml_type`, not from the checkpoint filename or the GGUF-wide
@@ -136,6 +139,17 @@ path when `blk.0.attn_q.weight` is stored as `Q8_0` inside the GGUF.
   - dequantized `Q8_0`
   - dequantized `Q5_K`
   - synthetic fallback
+
+`moe::safetensors`:
+
+- reads only Safetensors headers, not tensor payload bytes
+- accepts a `.safetensors` file, a Hugging Face `.safetensors.index.json`, or a
+  directory containing either an index or direct shards
+- records tensor names, dtypes, shapes, byte sizes, data offsets, and shard paths
+  relative to the inspected root
+- labels recognizable MoE router and expert candidates from tensor names and
+  simple rank-2 router-shape heuristics
+- emits deterministic JSON for experiment setup without creating a project
 
 When the selected tensor is dequantized and not already square, the GPU
 temporal path resamples it to the neuron grid instead of rejecting the
