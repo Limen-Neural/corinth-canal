@@ -149,7 +149,8 @@ impl KernelModule {
             )));
         }
 
-        match Module::from_fatbin(bytes, &[]) {
+        let empty_opts: &[cust::module::ModuleJitOption] = &[];
+        match Module::from_fatbin(bytes, empty_opts) {
             Ok(module) => Ok(module),
             Err(e) => {
                 let (error_log, info_log) = capture_jit_log_split(bytes);

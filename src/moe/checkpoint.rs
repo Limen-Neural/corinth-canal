@@ -758,7 +758,7 @@ fn quantization_label(file_type: Option<u32>) -> String {
         Some(0) => "F32".into(),
         Some(1) => "F16".into(),
         Some(other) => format!("GGUF({other})"),
-        None => "GGUF".into(),
+        _ => "GGUF".into(),
     }
 }
 

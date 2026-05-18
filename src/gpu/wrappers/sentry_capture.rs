@@ -164,7 +164,8 @@ pub fn capture_launch_failure(
             scope.set_fingerprint(Some(&[context.kernel_name.as_str(), error_category]));
         },
         || {
-            sentry::capture_message(&event_message, sentry::Level::Error);
+            let msg = event_message.as_str();
+            sentry::capture_message(msg, sentry::Level::Error);
         },
     );
 }
