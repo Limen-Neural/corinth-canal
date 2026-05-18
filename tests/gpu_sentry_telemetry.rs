@@ -183,7 +183,6 @@ mod gpu_telemetry_tests {
 mod no_cuda_tests {
     #[test]
     fn test_cuda_feature_disabled() {
-        // This test ensures the test suite compiles even without CUDA
-        assert!(true, "GPU telemetry tests require cuda feature");
+        // This test exists so the integration test target still compiles in CPU-only CI.
     }
 }

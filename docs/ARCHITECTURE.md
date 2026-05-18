@@ -64,8 +64,9 @@ Key pieces:
 
 ### GPU Observability
 
-CUDA kernel launch failures are automatically captured and sent to Sentry when
-`SENTRY_DSN` is configured. Each failure event includes:
+CUDA kernel launch failures are captured and sent to Sentry after the caller
+initializes Sentry (the examples do this via `examples/support/observability.rs`
+when `SENTRY_DSN` is configured). Each failure event includes:
 
 - Kernel name and launch type (PTX/fatbin or C ABI shim)
 - Grid and block dimensions
@@ -74,8 +75,8 @@ CUDA kernel launch failures are automatically captured and sent to Sentry when
 - JIT compilation logs (when applicable for module load failures)
 
 Events are fingerprinted by `[kernel_name, error_category]` for efficient
-grouping in Sentry dashboards. This telemetry is opt-in: when `SENTRY_DSN` is
-unset, the capture layer is a no-op and introduces no runtime overhead.
+grouping in Sentry dashboards. This telemetry is opt-in: when no Sentry client
+is active, the capture layer is a no-op and introduces no runtime overhead.
 
 Instrumented launch sites:
 

@@ -8,7 +8,8 @@
 //  - CUDA error codes and messages
 //  - JIT compilation logs (when applicable)
 //
-//  Events are sent to Sentry only when SENTRY_DSN is configured.
+//  Events are sent to Sentry only after the caller initializes a Sentry client
+//  (for example via examples/support/observability::init_sentry).
 //  This module has no effect when Sentry is disabled.
 // ════════════════════════════════════════════════════════════════════
 
@@ -71,9 +72,9 @@ pub struct LaunchContext {
 
 /// Capture a CUDA kernel launch failure and send it to Sentry.
 ///
-/// This function is a no-op when Sentry is not initialized (i.e. when
-/// SENTRY_DSN is unset). It does not block or fail; it simply logs the
-/// failure and returns.
+/// This function is a no-op when no Sentry client is active. Callers are
+/// expected to initialize Sentry separately; setting `SENTRY_DSN` alone does
+/// not activate capture.
 ///
 /// # Arguments
 ///

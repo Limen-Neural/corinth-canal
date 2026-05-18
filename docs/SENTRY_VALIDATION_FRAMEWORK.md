@@ -8,7 +8,7 @@ This document outlines the comprehensive Sentry validation framework to be imple
 
 ✅ **GPU Launch Failure Telemetry**
 - Sentry capture for CUDA kernel launch failures
-- 11 instrumented kernel launch sites
+- 10 instrumented failure capture sites
 - Integration tests in `tests/gpu_sentry_telemetry.rs`
 - Documentation in `docs/ARCHITECTURE.md`
 
