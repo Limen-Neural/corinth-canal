@@ -771,10 +771,15 @@ fn paths_refer_to_same_file(left: &Path, right: &Path) -> std::io::Result<bool> 
 
     #[cfg(windows)]
     {
-        Ok(
-            left_meta.volume_serial_number() == right_meta.volume_serial_number()
-                && left_meta.file_index() == right_meta.file_index(),
-        )
+        match (
+            left_meta.volume_serial_number(),
+            right_meta.volume_serial_number(),
+            left_meta.file_index(),
+            right_meta.file_index(),
+        ) {
+            (Some(vl), Some(vr), Some(il), Some(ir)) => Ok(vl == vr && il == ir),
+            _ => Ok(fs::canonicalize(left)? == fs::canonicalize(right)?),
+        }
     }
 
     #[cfg(not(any(unix, windows)))]
