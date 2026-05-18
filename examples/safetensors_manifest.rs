@@ -26,10 +26,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(USAGE.into());
     }
 
-    if let Some(parent) = output_path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)?;
+    if let Some(parent) = output_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
     }
 
     let manifest = write_safetensors_manifest(&checkpoint_path, &output_path)?;
