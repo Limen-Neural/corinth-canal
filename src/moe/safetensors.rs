@@ -5,8 +5,9 @@
 //! not perform activation tracing or router math.
 
 use crate::error::{HybridError, Result};
-use serde::Deserialize;
-use serde_json::Value;
+use serde::de::{self, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer};
+use serde_json::{Map, Number, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Read;
@@ -63,6 +64,8 @@ struct ShardInspection {
     metadata: BTreeMap<String, String>,
     tensors: Vec<SafetensorsTensorRecord>,
 }
+
+struct NoDuplicateValue(Value);
 
 /// Inspect a Safetensors file, sharded Safetensors index, or directory of
 /// Safetensors shards and return a deterministic JSON-serializable manifest.
@@ -316,8 +319,7 @@ fn inspect_shard(path: &Path, root: &Path) -> Result<ShardInspection> {
     let mut header_bytes = vec![0u8; header_len];
     file.read_exact(&mut header_bytes)
         .map_err(|e| model_load(path, format!("read Safetensors header: {e}")))?;
-    let header: Value = serde_json::from_slice(&header_bytes)
-        .map_err(|e| model_load(path, format!("parse Safetensors header JSON: {e}")))?;
+    let header = parse_json_rejecting_duplicate_keys(&header_bytes, path, "Safetensors header")?;
     parse_header(path, root, file_len, header_len_u64, header)
 }
 
@@ -341,7 +343,7 @@ fn parse_header(
 
     for (name, value) in object {
         if name == "__metadata__" {
-            metadata.extend(stringify_value_object(value));
+            metadata.extend(parse_metadata_object(path, value)?);
             continue;
         }
 
@@ -395,16 +397,14 @@ fn parse_header(
             ));
         }
         let byte_size = end - start;
-        match expected_tensor_byte_size(&dtype, &shape, path, name)? {
-            Some(expected) if expected != byte_size => {
-                return Err(model_load(
-                    path,
-                    format!(
-                        "tensor '{name}' byte size mismatch: shape/dtype imply {expected} bytes, data_offsets span {byte_size} bytes"
-                    ),
-                ));
-            }
-            _ => {}
+        let expected = expected_tensor_byte_size(&dtype, &shape, path, name)?;
+        if expected != byte_size {
+            return Err(model_load(
+                path,
+                format!(
+                    "tensor '{name}' byte size mismatch: shape/dtype imply {expected} bytes, data_offsets span {byte_size} bytes"
+                ),
+            ));
         }
 
         tensors.push(SafetensorsTensorRecord {
@@ -418,7 +418,7 @@ fn parse_header(
         });
     }
 
-    reject_overlapping_tensor_ranges(path, &tensors)?;
+    reject_tensor_data_ranges(path, &tensors, data_len)?;
 
     Ok(ShardInspection { metadata, tensors })
 }
@@ -471,13 +471,15 @@ fn read_index(path: &Path) -> Result<RawIndex> {
         ));
     }
     let bytes = fs::read(path).map_err(|e| model_load(path, e.to_string()))?;
-    serde_json::from_slice(&bytes).map_err(|e| model_load(path, format!("parse index JSON: {e}")))
+    let value = parse_json_rejecting_duplicate_keys(&bytes, path, "Safetensors index")?;
+    serde_json::from_value(value).map_err(|e| model_load(path, format!("parse index JSON: {e}")))
 }
 
 fn find_index_file(root: &Path) -> Result<Option<PathBuf>> {
     let mut candidates = Vec::new();
     for path in read_dir_paths(root)? {
         if is_safetensors_index(&path) && is_regular_file(&path)? {
+            validate_path_stays_under_root(root, &path)?;
             candidates.push(path);
         }
     }
@@ -518,10 +520,17 @@ fn is_regular_file(path: &Path) -> Result<bool> {
         .map_err(|e| model_load(path, e.to_string()))
 }
 
-fn reject_overlapping_tensor_ranges(
+fn reject_tensor_data_ranges(
     path: &Path,
     tensors: &[SafetensorsTensorRecord],
+    data_len: u64,
 ) -> Result<()> {
+    let data_len = usize::try_from(data_len).map_err(|_| {
+        model_load(
+            path,
+            format!("Safetensors data section length {data_len} does not fit in usize"),
+        )
+    })?;
     let mut ranges = tensors
         .iter()
         .map(|tensor| {
@@ -534,17 +543,35 @@ fn reject_overlapping_tensor_ranges(
         .collect::<Vec<_>>();
     ranges.sort_by_key(|(start, end, name)| (*start, *end, *name));
 
-    let mut previous: Option<(usize, usize, &str)> = None;
+    let mut expected_start = 0usize;
+    let mut previous_name: Option<&str> = None;
     for (start, end, name) in ranges {
-        if let Some((_, previous_end, previous_name)) = previous
-            && start < previous_end
-        {
+        if start < expected_start {
             return Err(model_load(
                 path,
-                format!("tensor '{name}' data range overlaps tensor '{previous_name}'"),
+                format!(
+                    "tensor '{name}' data range overlaps tensor '{}'",
+                    previous_name.unwrap_or("<unknown>")
+                ),
             ));
         }
-        previous = Some((start, end, name));
+        if start > expected_start {
+            return Err(model_load(
+                path,
+                format!("tensor '{name}' data range leaves a gap from {expected_start} to {start}"),
+            ));
+        }
+        expected_start = end;
+        previous_name = Some(name);
+    }
+
+    if expected_start != data_len {
+        return Err(model_load(
+            path,
+            format!(
+                "Safetensors tensor data ranges end at {expected_start}, but data section is {data_len} bytes"
+            ),
+        ));
     }
 
     Ok(())
@@ -564,10 +591,13 @@ fn expected_tensor_byte_size(
     shape: &[usize],
     path: &Path,
     tensor_name: &str,
-) -> Result<Option<usize>> {
-    let Some(element_size) = dtype_size_bytes(dtype) else {
-        return Ok(None);
-    };
+) -> Result<usize> {
+    let element_size = dtype_size_bytes(dtype).ok_or_else(|| {
+        model_load(
+            path,
+            format!("tensor '{tensor_name}' has unsupported Safetensors dtype '{dtype}'"),
+        )
+    })?;
     let elements = shape.iter().try_fold(1usize, |acc, dim| {
         acc.checked_mul(*dim).ok_or_else(|| {
             model_load(
@@ -578,7 +608,6 @@ fn expected_tensor_byte_size(
     })?;
     elements
         .checked_mul(element_size)
-        .map(Some)
         .ok_or_else(|| model_load(path, format!("tensor '{tensor_name}' byte size overflow")))
 }
 
@@ -598,16 +627,30 @@ fn merge_shard_metadata(
     shard_metadata: BTreeMap<String, String>,
 ) {
     for (key, value) in shard_metadata {
+        let namespaced_key = format!("shard:{shard_path}:{key}");
         match metadata.get(&key) {
             None => {
-                metadata.insert(key, value);
+                if !has_shard_metadata_key(metadata, &key) {
+                    metadata.insert(key.clone(), value.clone());
+                }
+                metadata.insert(namespaced_key, value);
             }
-            Some(existing) if existing == &value => {}
+            Some(existing) if existing == &value => {
+                metadata.insert(namespaced_key, value);
+            }
             Some(_) => {
-                metadata.insert(format!("shard:{shard_path}:{key}"), value);
+                metadata.remove(&key);
+                metadata.insert(namespaced_key, value);
             }
         }
     }
+}
+
+fn has_shard_metadata_key(metadata: &BTreeMap<String, String>, key: &str) -> bool {
+    let suffix = format!(":{key}");
+    metadata
+        .keys()
+        .any(|existing| existing.starts_with("shard:") && existing.ends_with(&suffix))
 }
 
 fn reject_output_checkpoint_conflict(
@@ -721,16 +764,31 @@ fn stringify_metadata(prefix: &str, metadata: BTreeMap<String, Value>) -> BTreeM
         .collect()
 }
 
-fn stringify_value_object(value: &Value) -> BTreeMap<String, String> {
-    value
-        .as_object()
-        .map(|object| {
-            object
-                .iter()
-                .map(|(key, value)| (key.clone(), stringify_json_value(value)))
-                .collect()
+fn parse_json_rejecting_duplicate_keys(bytes: &[u8], path: &Path, context: &str) -> Result<Value> {
+    serde_json::from_slice::<NoDuplicateValue>(bytes)
+        .map(|value| value.0)
+        .map_err(|e| model_load(path, format!("parse {context} JSON: {e}")))
+}
+
+fn parse_metadata_object(path: &Path, value: &Value) -> Result<BTreeMap<String, String>> {
+    let object = value.as_object().ok_or_else(|| {
+        model_load(
+            path,
+            "Safetensors __metadata__ must be a JSON object of strings".into(),
+        )
+    })?;
+    object
+        .iter()
+        .map(|(key, value)| {
+            let value = value.as_str().ok_or_else(|| {
+                model_load(
+                    path,
+                    format!("Safetensors __metadata__ key '{key}' must be a string"),
+                )
+            })?;
+            Ok((key.clone(), value.to_string()))
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 fn stringify_json_value(value: &Value) -> String {
@@ -738,6 +796,91 @@ fn stringify_json_value(value: &Value) -> String {
         .as_str()
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| value.to_string())
+}
+
+impl<'de> Deserialize<'de> for NoDuplicateValue {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(NoDuplicateValueVisitor)
+    }
+}
+
+struct NoDuplicateValueVisitor;
+
+impl<'de> Visitor<'de> for NoDuplicateValueVisitor {
+    type Value = NoDuplicateValue;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("valid JSON without duplicate object keys")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> std::result::Result<Self::Value, E> {
+        Ok(NoDuplicateValue(Value::Bool(value)))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E> {
+        Ok(NoDuplicateValue(Value::Number(Number::from(value))))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E> {
+        Ok(NoDuplicateValue(Value::Number(Number::from(value))))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        let number = Number::from_f64(value).ok_or_else(|| E::custom("invalid JSON number"))?;
+        Ok(NoDuplicateValue(Value::Number(number)))
+    }
+
+    fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(NoDuplicateValue(Value::String(value.to_string())))
+    }
+
+    fn visit_string<E>(self, value: String) -> std::result::Result<Self::Value, E> {
+        Ok(NoDuplicateValue(Value::String(value)))
+    }
+
+    fn visit_none<E>(self) -> std::result::Result<Self::Value, E> {
+        Ok(NoDuplicateValue(Value::Null))
+    }
+
+    fn visit_unit<E>(self) -> std::result::Result<Self::Value, E> {
+        Ok(NoDuplicateValue(Value::Null))
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut values = Vec::new();
+        while let Some(value) = seq.next_element::<NoDuplicateValue>()? {
+            values.push(value.0);
+        }
+        Ok(NoDuplicateValue(Value::Array(values)))
+    }
+
+    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut seen = BTreeSet::new();
+        let mut object = Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if !seen.insert(key.clone()) {
+                return Err(de::Error::custom(format!("duplicate JSON key '{key}'")));
+            }
+            let value = map.next_value::<NoDuplicateValue>()?;
+            object.insert(key, value.0);
+        }
+        Ok(NoDuplicateValue(Value::Object(object)))
+    }
 }
 
 fn relative_path(path: &Path, root: &Path) -> String {
@@ -945,6 +1088,29 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn rejects_directory_index_that_escapes_via_symlink() {
+        let dir = temp_dir("index-symlink");
+        let outside = temp_dir("outside-index");
+        fs::write(
+            outside.join("external.safetensors.index.json"),
+            r#"{"weight_map": {}}"#,
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            outside.join("external.safetensors.index.json"),
+            dir.join("model.safetensors.index.json"),
+        )
+        .unwrap();
+
+        let err = inspect_safetensors_checkpoint(&dir).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("must stay within the checkpoint directory")
+        );
+    }
+
     #[test]
     fn rejects_multiple_directory_indexes() {
         let dir = temp_dir("multiple-indexes");
@@ -1023,6 +1189,54 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unknown_safetensors_dtype() {
+        let dir = temp_dir("unknown-dtype");
+        let path = dir.join("bad.safetensors");
+        write_safetensors(
+            &path,
+            r#"{"bad.weight": {"dtype": "F128", "shape": [1], "data_offsets": [0, 2]}}"#,
+            2,
+        );
+
+        let err = inspect_safetensors_checkpoint(&path).unwrap_err();
+        assert!(err.to_string().contains("unsupported Safetensors dtype"));
+    }
+
+    #[test]
+    fn rejects_duplicate_header_keys() {
+        let dir = temp_dir("duplicate-keys");
+        let path = dir.join("bad.safetensors");
+        write_safetensors(
+            &path,
+            r#"{
+                "dup.weight": {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]},
+                "dup.weight": {"dtype": "F16", "shape": [1], "data_offsets": [2, 4]}
+            }"#,
+            4,
+        );
+
+        let err = inspect_safetensors_checkpoint(&path).unwrap_err();
+        assert!(err.to_string().contains("duplicate JSON key"));
+    }
+
+    #[test]
+    fn rejects_non_string_metadata_values() {
+        let dir = temp_dir("metadata-values");
+        let path = dir.join("bad.safetensors");
+        write_safetensors(
+            &path,
+            r#"{
+                "__metadata__": {"format": 1},
+                "a.weight": {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]}
+            }"#,
+            2,
+        );
+
+        let err = inspect_safetensors_checkpoint(&path).unwrap_err();
+        assert!(err.to_string().contains("must be a string"));
+    }
+
+    #[test]
     fn rejects_overlapping_tensor_ranges() {
         let dir = temp_dir("overlap");
         let path = dir.join("bad.safetensors");
@@ -1037,6 +1251,71 @@ mod tests {
 
         let err = inspect_safetensors_checkpoint(&path).unwrap_err();
         assert!(err.to_string().contains("data range overlaps"));
+    }
+
+    #[test]
+    fn rejects_tensor_data_gaps_and_trailing_bytes() {
+        let dir = temp_dir("data-gaps");
+        let gap_path = dir.join("gap.safetensors");
+        write_safetensors(
+            &gap_path,
+            r#"{
+                "a.weight": {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]},
+                "b.weight": {"dtype": "F16", "shape": [1], "data_offsets": [4, 6]}
+            }"#,
+            6,
+        );
+        let err = inspect_safetensors_checkpoint(&gap_path).unwrap_err();
+        assert!(err.to_string().contains("leaves a gap"));
+
+        let trailing_path = dir.join("trailing.safetensors");
+        write_safetensors(
+            &trailing_path,
+            r#"{"a.weight": {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]}}"#,
+            4,
+        );
+        let err = inspect_safetensors_checkpoint(&trailing_path).unwrap_err();
+        assert!(err.to_string().contains("data section is 4 bytes"));
+    }
+
+    #[test]
+    fn conflicting_shard_metadata_is_only_namespaced() {
+        let dir = temp_dir("metadata-conflict");
+        write_safetensors(
+            &dir.join("a.safetensors"),
+            r#"{
+                "__metadata__": {"format": "pt"},
+                "a.weight": {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]}
+            }"#,
+            2,
+        );
+        write_safetensors(
+            &dir.join("b.safetensors"),
+            r#"{
+                "__metadata__": {"format": "np"},
+                "b.weight": {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]}
+            }"#,
+            2,
+        );
+
+        let manifest = inspect_safetensors_checkpoint(&dir).unwrap();
+        assert!(!manifest.checkpoint.metadata.contains_key("format"));
+        assert_eq!(
+            manifest
+                .checkpoint
+                .metadata
+                .get("shard:a.safetensors:format")
+                .map(String::as_str),
+            Some("pt")
+        );
+        assert_eq!(
+            manifest
+                .checkpoint
+                .metadata
+                .get("shard:b.safetensors:format")
+                .map(String::as_str),
+            Some("np")
+        );
     }
 
     #[test]
