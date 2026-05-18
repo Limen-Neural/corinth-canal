@@ -7,7 +7,7 @@
 //! ```
 
 use corinth_canal::moe::safetensors::write_safetensors_manifest;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const USAGE: &str =
     "usage: safetensors_manifest <checkpoint.safetensors|index.json|directory> <output.json>";
@@ -26,11 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(USAGE.into());
     }
 
-    if let Some(parent) = output_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
+    create_output_parent_dir(&output_path)?;
 
     let manifest = write_safetensors_manifest(&checkpoint_path, &output_path)?;
     println!(
@@ -45,5 +41,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         manifest.candidates.expert_tensors.len()
     );
 
+    Ok(())
+}
+
+fn create_output_parent_dir(output_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(parent) = output_path.parent() else {
+        return Ok(());
+    };
+    if parent.as_os_str().is_empty() {
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(parent)?;
     Ok(())
 }
