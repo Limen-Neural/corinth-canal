@@ -20,6 +20,7 @@ use std::path::{Component, Path, PathBuf};
 const SAFETENSORS_EXTENSION: &str = "safetensors";
 const MAX_HEADER_BYTES: usize = 64 * 1024 * 1024;
 const MAX_INDEX_BYTES: u64 = 64 * 1024 * 1024;
+const INDEX_UNREFERENCED_SHARDS_KEY: &str = "index:unreferenced_shards";
 /// Unambiguous boundary between shard relative path and logical metadata key in
 /// `shard:*` manifest keys (avoids ambiguity when the logical key contains `:`).
 const SHARD_METADATA_KEY_SEP: char = '\u{001e}';
@@ -160,6 +161,7 @@ fn inspect_index(root: &Path, index_path: &Path) -> Result<SafetensorsManifest> 
     let shards = expected_by_shard.keys().cloned().collect::<Vec<_>>();
 
     let mut metadata = stringify_metadata("index", raw.metadata);
+    metadata.remove(INDEX_UNREFERENCED_SHARDS_KEY);
     metadata.insert("index_tensor_count".into(), index_tensor_count.to_string());
     let indexed_shards = shards.iter().cloned().collect::<BTreeSet<_>>();
     let unreferenced_shards = list_safetensors_files(root)?
@@ -171,10 +173,10 @@ fn inspect_index(root: &Path, index_path: &Path) -> Result<SafetensorsManifest> 
         let encoded = serde_json::to_string(&unreferenced_shards).map_err(|e| {
             model_load(
                 index_path,
-                format!("serialize index:unreferenced_shards list: {e}"),
+                format!("serialize {INDEX_UNREFERENCED_SHARDS_KEY} list: {e}"),
             )
         })?;
-        metadata.insert("index:unreferenced_shards".into(), encoded);
+        metadata.insert(INDEX_UNREFERENCED_SHARDS_KEY.into(), encoded);
     }
     let index_file = Some(relative_path(index_path, root));
     inspect_index_shards(root, index_file, shards, expected_by_shard, metadata)
@@ -715,7 +717,7 @@ fn reject_output_checkpoint_conflict(
     if let Some(unreferenced_shards) = manifest
         .checkpoint
         .metadata
-        .get("index:unreferenced_shards")
+        .get(INDEX_UNREFERENCED_SHARDS_KEY)
     {
         for shard in parse_unreferenced_shards_metadata(unreferenced_shards) {
             checkpoint_files.insert(root.join(shard));
@@ -808,12 +810,15 @@ fn is_safetensors_index(path: &Path) -> bool {
 
 fn index_shard_path(root: &Path, index_path: &Path, relative: &str) -> Result<PathBuf> {
     let relative_path = Path::new(relative);
+    let mut normalized = PathBuf::new();
     let escapes_root = relative_path.is_absolute()
-        || relative_path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
+        || relative_path.components().any(|component| match component {
+            Component::Normal(part) => {
+                normalized.push(part);
+                false
+            }
+            Component::CurDir => false,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => true,
         });
     if escapes_root {
         return Err(model_load(
@@ -821,7 +826,13 @@ fn index_shard_path(root: &Path, index_path: &Path, relative: &str) -> Result<Pa
             format!("index shard path '{relative}' must stay within the checkpoint directory"),
         ));
     }
-    let candidate = root.join(relative_path);
+    if normalized.as_os_str().is_empty() {
+        return Err(model_load(
+            index_path,
+            format!("index shard path '{relative}' must name a Safetensors shard"),
+        ));
+    }
+    let candidate = root.join(normalized);
     validate_path_stays_under_root(root, &candidate)?;
     Ok(candidate)
 }
@@ -1089,6 +1100,61 @@ mod tests {
         assert_eq!(manifest.tensors[0].name, "a.router.weight");
         assert_eq!(manifest.tensors[1].name, "z.weight");
         assert_eq!(manifest.candidates.router_tensors, vec!["a.router.weight"]);
+    }
+
+    #[test]
+    fn user_index_metadata_cannot_spoof_unreferenced_shards() {
+        let dir = temp_dir("reserved-index-metadata");
+        write_safetensors(
+            &dir.join("model.safetensors"),
+            r#"{"a.weight": {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]}}"#,
+            2,
+        );
+        fs::write(
+            dir.join("model.safetensors.index.json"),
+            r#"{
+                "metadata": {"unreferenced_shards": "spoof.safetensors"},
+                "weight_map": {"a.weight": "model.safetensors"}
+            }"#,
+        )
+        .unwrap();
+
+        let manifest = inspect_safetensors_checkpoint(&dir).unwrap();
+        assert!(
+            !manifest
+                .checkpoint
+                .metadata
+                .contains_key(INDEX_UNREFERENCED_SHARDS_KEY)
+        );
+    }
+
+    #[test]
+    fn index_shard_paths_are_normalized_before_deduplication() {
+        let dir = temp_dir("normalized-index-paths");
+        write_safetensors(
+            &dir.join("model.safetensors"),
+            r#"{
+                "a.weight": {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]},
+                "b.weight": {"dtype": "F16", "shape": [1], "data_offsets": [2, 4]}
+            }"#,
+            4,
+        );
+        fs::write(
+            dir.join("model.safetensors.index.json"),
+            r#"{
+                "weight_map": {
+                    "a.weight": "model.safetensors",
+                    "b.weight": "./model.safetensors"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let manifest = inspect_safetensors_checkpoint(&dir).unwrap();
+        assert_eq!(manifest.checkpoint.shard_count, 1);
+        assert_eq!(manifest.checkpoint.tensor_count, 2);
+        assert_eq!(manifest.tensors[0].source_shard, "model.safetensors");
+        assert_eq!(manifest.tensors[1].source_shard, "model.safetensors");
     }
 
     #[test]
