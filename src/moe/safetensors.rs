@@ -547,7 +547,7 @@ format!("tensor data offset {} does not fit in usize", tensor.data_offsets[0]),
     let mut previous_name: Option<&str> = None;
     for (start, end, name) in ranges {
         if start < expected_start {
-            return Err(model_load(
+format!("tensor data offset {} does not fit in usize", tensor.data_offsets[1]),
                 path,
                 format!(
                     "tensor '{name}' data range overlaps tensor '{}'",
