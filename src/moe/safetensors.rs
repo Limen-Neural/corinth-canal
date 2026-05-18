@@ -1310,7 +1310,7 @@ mod tests {
             manifest
                 .checkpoint
                 .metadata
-                .get("index:unreferenced_shards")
+                .get(INDEX_UNREFERENCED_SHARDS_KEY)
                 .map(String::as_str),
             Some(r#"["unused.safetensors"]"#)
         );
