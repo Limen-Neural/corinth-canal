@@ -11,6 +11,10 @@ use serde_json::{Map, Number, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Read;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 const SAFETENSORS_EXTENSION: &str = "safetensors";
@@ -613,10 +617,11 @@ fn expected_tensor_byte_size(
 
 fn dtype_size_bytes(dtype: &str) -> Option<usize> {
     match dtype {
-        "F64" | "I64" | "U64" => Some(8),
+        "C128" => Some(16),
+        "F64" | "I64" | "U64" | "C64" => Some(8),
         "F32" | "I32" | "U32" => Some(4),
         "F16" | "BF16" | "I16" | "U16" => Some(2),
-        "F8_E5M2" | "F8_E4M3" | "I8" | "U8" | "BOOL" => Some(1),
+        "F8_E5M2" | "F8_E4M3" | "F8_E8M0" | "I8" | "U8" | "BOOL" => Some(1),
         _ => None,
     }
 }
@@ -647,10 +652,12 @@ fn merge_shard_metadata(
 }
 
 fn has_shard_metadata_key(metadata: &BTreeMap<String, String>, key: &str) -> bool {
-    let suffix = format!(":{key}");
-    metadata
-        .keys()
-        .any(|existing| existing.starts_with("shard:") && existing.ends_with(&suffix))
+    metadata.keys().any(|existing| {
+        existing
+            .strip_prefix("shard:")
+            .and_then(|rest| rest.rsplit_once(':'))
+            .is_some_and(|(_, shard_key)| shard_key == key)
+    })
 }
 
 fn reject_output_checkpoint_conflict(
@@ -677,16 +684,26 @@ fn reject_output_checkpoint_conflict(
     for tensor in &manifest.tensors {
         checkpoint_files.insert(root.join(&tensor.source_shard));
     }
+    if let Some(unreferenced_shards) = manifest
+        .checkpoint
+        .metadata
+        .get("index:unreferenced_shards")
+    {
+        for shard in unreferenced_shards
+            .split(',')
+            .filter(|shard| !shard.is_empty())
+        {
+            checkpoint_files.insert(root.join(shard));
+        }
+    }
 
     for checkpoint_file in checkpoint_files {
-        if checkpoint_file.exists()
-            && fs::canonicalize(&checkpoint_file).map_err(|e| {
-                model_load(
-                    &checkpoint_file,
-                    format!("canonicalize checkpoint file for output conflict check: {e}"),
-                )
-            })? == output
-        {
+        if paths_refer_to_same_file(&checkpoint_file, &output).map_err(|e| {
+            model_load(
+                &checkpoint_file,
+                format!("compare checkpoint/output file identity: {e}"),
+            )
+        })? {
             return Err(model_load(
                 output_path,
                 "manifest output path must not overwrite a Safetensors checkpoint or index file"
@@ -696,6 +713,33 @@ fn reject_output_checkpoint_conflict(
     }
 
     Ok(())
+}
+
+fn paths_refer_to_same_file(left: &Path, right: &Path) -> std::io::Result<bool> {
+    if !left.exists() || !right.exists() {
+        return Ok(false);
+    }
+
+    let left_meta = fs::metadata(left)?;
+    let right_meta = fs::metadata(right)?;
+
+    #[cfg(unix)]
+    {
+        Ok(left_meta.dev() == right_meta.dev() && left_meta.ino() == right_meta.ino())
+    }
+
+    #[cfg(windows)]
+    {
+        Ok(
+            left_meta.volume_serial_number() == right_meta.volume_serial_number()
+                && left_meta.file_index() == right_meta.file_index(),
+        )
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        Ok(fs::canonicalize(left)? == fs::canonicalize(right)?)
+    }
 }
 
 fn canonical_existing_or_parent(path: &Path) -> Result<PathBuf> {
@@ -1319,6 +1363,20 @@ mod tests {
     }
 
     #[test]
+    fn shard_metadata_key_detection_uses_exact_key_match() {
+        let mut metadata = BTreeMap::new();
+        let mut first = BTreeMap::new();
+        first.insert("xfoo".to_string(), "1".to_string());
+        merge_shard_metadata(&mut metadata, "a.safetensors", first);
+
+        let mut second = BTreeMap::new();
+        second.insert("foo".to_string(), "2".to_string());
+        merge_shard_metadata(&mut metadata, "b.safetensors", second);
+
+        assert_eq!(metadata.get("foo").map(String::as_str), Some("2"));
+    }
+
+    #[test]
     fn directory_scan_ignores_non_file_safetensors_entries() {
         let dir = temp_dir("non-file-entry");
         fs::create_dir(dir.join("scratch.safetensors")).unwrap();
@@ -1355,6 +1413,48 @@ mod tests {
 
         let err = write_safetensors_manifest(&path, &path).unwrap_err();
         assert!(err.to_string().contains("must not overwrite"));
+    }
+
+    #[test]
+    fn rejects_manifest_output_that_overwrites_unreferenced_index_shard() {
+        let dir = temp_dir("output-unreferenced");
+        let main_shard = dir.join("model-00001-of-00001.safetensors");
+        write_safetensors(
+            &main_shard,
+            r#"{"a.weight": {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]}}"#,
+            2,
+        );
+        let unreferenced = dir.join("unused.safetensors");
+        write_safetensors(
+            &unreferenced,
+            r#"{"b.weight": {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]}}"#,
+            2,
+        );
+        fs::write(
+            dir.join("model.safetensors.index.json"),
+            r#"{"weight_map": {"a.weight": "model-00001-of-00001.safetensors"}}"#,
+        )
+        .unwrap();
+
+        let err = write_safetensors_manifest(&dir, &unreferenced).unwrap_err();
+        assert!(err.to_string().contains("must not overwrite"));
+    }
+
+    #[test]
+    fn accepts_current_additional_safetensors_dtypes() {
+        let dir = temp_dir("extra-dtypes");
+        let path = dir.join("model.safetensors");
+        write_safetensors(
+            &path,
+            r#"{
+                "a.weight": {"dtype": "F8_E8M0", "shape": [4], "data_offsets": [0, 4]},
+                "b.weight": {"dtype": "C64", "shape": [2], "data_offsets": [4, 20]}
+            }"#,
+            20,
+        );
+
+        let manifest = inspect_safetensors_checkpoint(&path).unwrap();
+        assert_eq!(manifest.checkpoint.tensor_count, 2);
     }
 
     #[test]
