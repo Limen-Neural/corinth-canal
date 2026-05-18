@@ -13,7 +13,23 @@
 // ════════════════════════════════════════════════════════════════════
 
 use super::error::GpuError;
+use cust::device::{Device, DeviceAttribute};
 use serde_json::json;
+
+fn runtime_gpu_arch_tag() -> String {
+    Device::get_device(0)
+        .ok()
+        .and_then(|device| {
+            let major = device
+                .get_attribute(DeviceAttribute::ComputeCapabilityMajor)
+                .ok()? as u32;
+            let minor = device
+                .get_attribute(DeviceAttribute::ComputeCapabilityMinor)
+                .ok()? as u32;
+            Some(format!("sm_{}{}", major, minor))
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
 
 /// Launch type discriminator for Sentry event tagging.
 #[derive(Debug, Clone, Copy)]
@@ -84,13 +100,26 @@ pub fn capture_launch_failure(
         GpuError::NoGpu => "no_gpu",
     };
 
+    let event_message = match error {
+        GpuError::ModuleLoadFailed(_) => {
+            format!("CUDA fatbin module load failed: {}", context.kernel_name)
+        }
+        GpuError::LaunchFailed(_) => format!("CUDA kernel launch failed: {}", context.kernel_name),
+        _ => format!(
+            "CUDA GPU error [{}]: {}",
+            error_category, context.kernel_name
+        ),
+    };
+
+    let gpu_arch = runtime_gpu_arch_tag();
+
     sentry::with_scope(
         |scope| {
             // Tags for filtering and grouping in Sentry
             scope.set_tag("kernel_name", context.kernel_name.clone());
             scope.set_tag("launch_type", context.launch_type.as_str());
             scope.set_tag("cuda_error_category", error_category);
-            scope.set_tag("gpu_arch", "sm_120");
+            scope.set_tag("gpu_arch", gpu_arch.as_str());
 
             // Structured extras for detailed diagnostics
             scope.set_extra(
@@ -133,10 +162,7 @@ pub fn capture_launch_failure(
             scope.set_fingerprint(Some(&[context.kernel_name.as_str(), error_category]));
         },
         || {
-            sentry::capture_message(
-                &format!("CUDA kernel launch failed: {}", context.kernel_name),
-                sentry::Level::Error,
-            );
+            sentry::capture_message(&event_message, sentry::Level::Error);
         },
     );
 }
