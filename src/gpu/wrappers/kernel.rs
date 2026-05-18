@@ -18,6 +18,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 use super::error::{GpuError, GpuResult};
+use super::sentry_capture::{LaunchContext, LaunchType, capture_launch_failure};
 use cust::function::Function;
 use cust::module::Module;
 use cust::sys as cuda;
@@ -151,26 +152,58 @@ impl KernelModule {
         match Module::from_fatbin(bytes, &[]) {
             Ok(module) => Ok(module),
             Err(e) => {
-                let log = capture_jit_log(bytes);
+                let (error_log, info_log) = capture_jit_log_split(bytes);
+                let combined_log = if !error_log.is_empty() || !info_log.is_empty() {
+                    let mut log = String::new();
+                    if !error_log.is_empty() {
+                        log.push_str("error: ");
+                        log.push_str(&error_log);
+                    }
+                    if !info_log.is_empty() {
+                        if !log.is_empty() {
+                            log.push('\n');
+                        }
+                        log.push_str("info: ");
+                        log.push_str(&info_log);
+                    }
+                    log
+                } else {
+                    "<driver returned no JIT diagnostics>".to_string()
+                };
+
                 eprintln!(
                     "[CUDA JIT] Failed to load module '{name}': {e:?}\n\
-                     --- CUDA JIT log ---\n{log}\n--------------------"
+                     --- CUDA JIT log ---\n{combined_log}\n--------------------"
                 );
-                Err(GpuError::ModuleLoadFailed(format!(
+
+                let gpu_error = GpuError::ModuleLoadFailed(format!(
                     "JIT/load failed for '{name}': {e:?} \
                      (target: sm_120 — check driver \u{2265} 570 and CUDA toolkit \u{2265} 12.8)\n\
-                     --- CUDA JIT log ---\n{log}\n--------------------"
-                )))
+                     --- CUDA JIT log ---\n{combined_log}\n--------------------"
+                ));
+
+                // Capture to Sentry with JIT logs
+                let context = LaunchContext {
+                    kernel_name: name.to_string(),
+                    launch_type: LaunchType::PtxFatbin,
+                    grid: (0, 0, 0),  // N/A for module load
+                    block: (0, 0, 0), // N/A for module load
+                    shared_mem: 0,
+                    neuron_count: None,
+                };
+                capture_launch_failure(context, &gpu_error, Some((error_log, info_log)));
+
+                Err(gpu_error)
             }
         }
     }
 }
 
 /// Re-run `cuModuleLoadDataEx` through the raw driver API with error/info
-/// log buffers attached, and return the captured diagnostics as a single
-/// human-readable string. The loaded module (if any) is immediately
+/// log buffers attached, and return the captured diagnostics as separate
+/// error and info log strings. The loaded module (if any) is immediately
 /// unloaded — this is purely a diagnostic pass.
-fn capture_jit_log(bytes: &[u8]) -> String {
+fn capture_jit_log_split(bytes: &[u8]) -> (String, String) {
     // 16 KiB is plenty for any real-world JIT log, and we cap below to be safe.
     const LOG_CAP: usize = 16 * 1024;
 
@@ -226,22 +259,7 @@ fn capture_jit_log(bytes: &[u8]) -> String {
     let error_log = cstr_from_buf(&error_buf);
     let info_log = cstr_from_buf(&info_buf);
 
-    let mut combined = String::new();
-    if !error_log.is_empty() {
-        combined.push_str("error: ");
-        combined.push_str(&error_log);
-    }
-    if !info_log.is_empty() {
-        if !combined.is_empty() {
-            combined.push('\n');
-        }
-        combined.push_str("info: ");
-        combined.push_str(&info_log);
-    }
-    if combined.is_empty() {
-        combined.push_str("<driver returned no JIT diagnostics>");
-    }
-    combined
+    (error_log, info_log)
 }
 
 fn cstr_from_buf(buf: &[u8]) -> String {

@@ -62,6 +62,40 @@ Key pieces:
 - `tick_gpu_temporal` advances GPU state but does not itself append routing CSV
   rows.
 
+### GPU Observability
+
+CUDA kernel launch failures are captured and sent to Sentry after the caller
+initializes Sentry (the examples do this via `examples/support/observability.rs`
+when `SENTRY_DSN` is configured). Each failure event includes:
+
+- Kernel name and launch type (PTX/fatbin or C ABI shim)
+- Grid and block dimensions
+- Shared memory allocation
+- CUDA error codes and messages
+- JIT compilation logs (when applicable for module load failures)
+
+Events are fingerprinted by `[kernel_name, error_category]` for efficient
+grouping in Sentry dashboards. This telemetry is opt-in: when no Sentry client
+is active, the capture layer is a no-op and introduces no runtime overhead.
+
+Instrumented launch sites:
+
+- **PTX/fatbin kernels** (via `cust::launch!` macro):
+  - `project_snapshot_current` — telemetry projection
+  - `lif_step` — LIF neuron step
+  - `gif_step_weighted` — GIF step with F32 synapses
+  - `reset_membrane` — membrane potential reset
+  - `satsolver_extract` — SAT solution extraction
+  - `satsolver_aux_update` — SAT auxiliary update
+  - `satsolver_best_reduce_pass2` — SAT reduction pass 2
+
+- **C ABI shim kernels** (Blackwell-critical F16 paths):
+  - `gif_step_weighted_f16` — GIF step with F16 synapses
+  - `saaq_find_best_walker` — SAAQ on-device reduction
+
+- **Module load failures**:
+  - Fatbin/PTX JIT compilation errors with full diagnostic logs
+
 ## Module map
 
 | Module | Role |

@@ -8,6 +8,7 @@ pub mod error;
 mod ffi;
 pub mod kernel;
 pub mod memory;
+pub mod sentry_capture;
 
 pub use accelerator::GpuAccelerator;
 pub use context::GpuContext;
