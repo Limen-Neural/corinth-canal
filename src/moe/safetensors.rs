@@ -47,15 +47,7 @@ pub struct SafetensorsTensorRecord {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct SafetensorsTensorRecord {
-    pub name: String,
-    pub dtype: String,
-    pub shape: Vec<usize>,
-    pub byte_size: usize,
-    pub source_shard: String,
-    pub data_offsets: [usize; 2],
-    pub labels: &'static [&'static str],
-}
+pub struct SafetensorsCandidateSummary {
     pub router_tensors: Vec<String>,
     pub expert_tensors: Vec<String>,
 }
