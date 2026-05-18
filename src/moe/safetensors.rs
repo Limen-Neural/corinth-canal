@@ -162,24 +162,32 @@ fn inspect_index(root: &Path, index_path: &Path) -> Result<SafetensorsManifest> 
 
     let mut metadata = stringify_metadata("index", raw.metadata);
     metadata.remove(INDEX_UNREFERENCED_SHARDS_KEY);
-    metadata.insert("index_tensor_count".into(), index_tensor_count.to_string());
     let indexed_shards = shards.iter().cloned().collect::<BTreeSet<_>>();
     let unreferenced_shards = list_safetensors_files(root)?
         .into_iter()
         .filter(|path| !indexed_shards.contains(path))
         .map(|path| relative_path(&path, root))
         .collect::<Vec<_>>();
-    if !unreferenced_shards.is_empty() {
-        let encoded = serde_json::to_string(&unreferenced_shards).map_err(|e| {
+    let unreferenced_shards_json = if unreferenced_shards.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&unreferenced_shards).map_err(|e| {
             model_load(
                 index_path,
                 format!("serialize {INDEX_UNREFERENCED_SHARDS_KEY} list: {e}"),
             )
-        })?;
-        metadata.insert(INDEX_UNREFERENCED_SHARDS_KEY.into(), encoded);
-    }
+        })?)
+    };
     let index_file = Some(relative_path(index_path, root));
-    inspect_index_shards(root, index_file, shards, expected_by_shard, metadata)
+    inspect_index_shards(
+        root,
+        index_file,
+        shards,
+        expected_by_shard,
+        metadata,
+        index_tensor_count,
+        unreferenced_shards_json,
+    )
 }
 
 fn inspect_index_shards(
@@ -188,6 +196,8 @@ fn inspect_index_shards(
     shards: Vec<PathBuf>,
     expected_by_shard: BTreeMap<PathBuf, BTreeSet<String>>,
     mut metadata: BTreeMap<String, String>,
+    index_tensor_count: usize,
+    unreferenced_shards_json: Option<String>,
 ) -> Result<SafetensorsManifest> {
     let mut tensors = Vec::new();
     for shard_path in &shards {
@@ -224,6 +234,11 @@ fn inspect_index_shards(
                 .into_iter()
                 .filter(|tensor| expected.contains(&tensor.name)),
         );
+    }
+
+    metadata.insert("index_tensor_count".into(), index_tensor_count.to_string());
+    if let Some(encoded) = unreferenced_shards_json {
+        metadata.insert(INDEX_UNREFERENCED_SHARDS_KEY.into(), encoded);
     }
 
     Ok(build_manifest(
