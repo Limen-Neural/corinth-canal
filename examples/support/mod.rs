@@ -174,6 +174,13 @@ pub fn load_cloud_lineup(
 
     let mut out = Vec::with_capacity(parsed.model.len());
     for entry in parsed.model {
+        if entry.target.trim().to_ascii_lowercase() != "cloud" {
+            eprintln!(
+                "cloud_lineup: skipping slug={}: expected target=\"cloud\", got \"{}\"",
+                entry.slug, entry.target
+            );
+            continue;
+        }
         let family = parse_family_slug(&entry.family);
         if family.is_none() && !entry.family.is_empty() {
             eprintln!(
