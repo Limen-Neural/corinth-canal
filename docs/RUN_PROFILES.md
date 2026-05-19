@@ -98,6 +98,24 @@ actual `ggml_type` of `blk.0.attn_q.weight`, not on the filename suffix.
 The example also writes `<output_root>/synapse_diagnostic.json` for a structured
 record of the same fields.
 
+## Safetensors manifest
+
+| Profile | Command |
+|---------|---------|
+| Inspect a Safetensors checkpoint or shard directory | `cargo run --example safetensors_manifest --no-default-features -- <checkpoint-or-dir> artifacts/safetensors_manifest.json` |
+
+Use Safetensors manifests when the goal is checkpoint anatomy: tensor names,
+dtypes, shapes, byte sizes, source shards, and recognizable MoE router/expert
+candidates. The manifest generator reads only Safetensors headers plus optional
+Hugging Face `.safetensors.index.json` metadata; it does not create a project,
+run activation tracing, or load tensor payload bytes.
+
+Use GGUF when the goal is current `corinth-canal` runtime routing. The
+`OlmoeRouter` path remains GGUF-backed for token embedding extraction, routing
+tensor access, and GPU synapse-source selection. Safetensors support is a setup
+and inspection adapter for experiment preparation, not a replacement for the
+runtime GGUF bridge.
+
 ## CSV replay
 
 | Profile | Command |

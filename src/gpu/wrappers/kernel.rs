@@ -1,3 +1,4 @@
+#![cfg(feature = "cuda")]
 // ════════════════════════════════════════════════════════════════════
 //  gpu/kernel.rs — Fatbin Module Loading and Kernel Management
 //
@@ -20,7 +21,7 @@
 use super::error::{GpuError, GpuResult};
 use super::sentry_capture::{LaunchContext, LaunchType, capture_launch_failure};
 use cust::function::Function;
-use cust::module::Module;
+use cust::module::{Module, ModuleJitOption};
 use cust::sys as cuda;
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -149,7 +150,8 @@ impl KernelModule {
             )));
         }
 
-        match Module::from_fatbin(bytes, &[]) {
+        let options = Vec::<ModuleJitOption>::new();
+        match Module::from_fatbin(bytes, &options) {
             Ok(module) => Ok(module),
             Err(e) => {
                 let (error_log, info_log) = capture_jit_log_split(bytes);

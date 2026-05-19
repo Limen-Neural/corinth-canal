@@ -366,7 +366,7 @@ impl GpuAccelerator {
 
         let f16_weights = match state.weights_f16.as_mut() {
             Some(weights_f16) => weights_f16,
-            None => {
+            _ => {
                 state.weights_f16 = Some(GpuBuffer::<u16>::alloc(expected)?);
                 state
                     .weights_f16
