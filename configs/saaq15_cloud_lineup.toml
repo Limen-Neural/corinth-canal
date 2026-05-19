@@ -1,0 +1,164 @@
+# corinth-canal SAAQ 1.5 cloud model lineup.
+#
+# Loaded by examples/saaq_latent_calibration.rs when
+# CLOUD_LINEUP_CONFIG points at this file (or when cloud sweep mode is
+# enabled). Each [[model]] entry is a cloud metadata stub — corinth-canal
+# does not create, provision, or tear down cloud resources.
+#
+# Cloud execution is delegated to Dioscuri-Cloud. This file records
+# metadata that corinth-canal stamps into experiment manifests and uses
+# for fail-fast validation at startup. When a model's required env vars
+# are unset, the runner emits a diagnostic and skips the candidate rather
+# than attempting partial execution.
+#
+# Fields:
+#   slug                directory-safe identifier (used in artifact paths)
+#   family              model family for routing tensor selection
+#                       one of: olmoe | qwen3_moe | gemma4 | deepseek2 | llama_moe | zaya | glm4
+#   cloud_model_id      provider-qualified model identifier (passed to Dioscuri-Cloud)
+#   source_url          canonical model card or provider listing
+#   target              execution target: "cloud"
+#   architecture        model class: "moe" | "dense"
+#   active_params       known active parameter count (informational)
+#   total_params        total parameter count including shared weights (informational)
+#   provider_format     expected runtime format on the cloud side
+#   required_env_vars   env var names required for cloud execution (no secrets)
+#
+# ── SAAQ campaign tags (per-model overrides in artifact manifests) ──
+# Defaults applied by the runner unless overridden per-entry:
+#   SAAQ_RULE        = "saaq_v1_5"
+#   TELEMETRY_SOURCE = "synthetic" | "csv"
+#   HEARTBEAT        = "off" | "on"
+#   REPEAT_COUNT     = 2
+#
+# No Terraform, no cloud credentials, no provider SDK code.
+
+# ── MET-55: nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16 (Dense, existing safetensors) ──
+[[model]]
+slug = "nemotron_3_nano_4b_cloud"
+family = "llama_moe"
+cloud_model_id = "nvidia/nvidia-nemotron-3-nano-4B-BF16"
+source_url = "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16"
+target = "cloud"
+architecture = "dense"
+active_params = "4B"
+total_params = "4B"
+provider_format = "nvcf-nim"
+required_env_vars = ["NEMOTRON_NIM_ENDPOINT", "NEMOTRON_NIM_API_KEY"]
+
+# ── MET-56: ibm-granite/granite-3.1-3b-a800m-base (MoE, existing safetensors) ──
+[[model]]
+slug = "granite_3_1_3b_a800m_cloud"
+family = "qwen3_moe"
+cloud_model_id = "ibm-granite/granite-3.1-3b-a800m-base"
+source_url = "https://huggingface.co/ibm-granite/granite-3.1-3b-a800m-base"
+target = "cloud"
+architecture = "moe"
+active_params = "800M"
+total_params = "3B"
+provider_format = "watsonx-saas"
+required_env_vars = ["WATSONX_ENDPOINT", "WATSONX_API_KEY", "WATSONX_PROJECT_ID"]
+
+# ── MET-57: Skywork/Skywork-MoE-Base-FP8 (FP8 MoE, cloud-only) ──
+[[model]]
+slug = "skywork_moe_base_fp8_cloud"
+family = "qwen3_moe"
+cloud_model_id = "Skywork/Skywork-MoE-Base-FP8"
+source_url = "https://huggingface.co/Skywork/Skywork-MoE-Base-FP8"
+target = "cloud"
+architecture = "moe"
+active_params = "3.7B"
+total_params = "16B"
+provider_format = "fp8-safetensors"
+required_env_vars = ["SKYWORK_FP8_ENDPOINT", "SKYWORK_FP8_API_KEY"]
+
+# ── MET-58: arcee-ai/Trinity-Nano-Base (MoE, existing safetensors) ──
+[[model]]
+slug = "trinity_nano_base_cloud"
+family = "qwen3_moe"
+cloud_model_id = "arcee-ai/Trinity-Nano-Base"
+source_url = "https://huggingface.co/arcee-ai/Trinity-Nano-Base"
+target = "cloud"
+architecture = "moe"
+active_params = "1B"
+total_params = "4.3B"
+provider_format = "nvcf-nim"
+required_env_vars = ["TRINITY_NIM_ENDPOINT", "TRINITY_NIM_API_KEY"]
+
+# ── MET-59: nvidia/NVIDIA-Nemotron-3-Nano-8B-4K-BF16 (Dense) ──
+[[model]]
+slug = "nemotron_3_nano_8b_cloud"
+family = "llama_moe"
+cloud_model_id = "nvidia/NVIDIA-Nemotron-3-Nano-8B-4K-BF16"
+source_url = "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-8B-4K-BF16"
+target = "cloud"
+architecture = "dense"
+active_params = "8B"
+total_params = "8B"
+provider_format = "nvcf-nim"
+required_env_vars = ["NEMOTRON_NIM_ENDPOINT", "NEMOTRON_NIM_API_KEY"]
+
+# ── MET-60: Zai-Org/GLM-4.6V-Flash (VLM, existing local GGUF but also cloud) ──
+[[model]]
+slug = "glm46v_flash_cloud"
+family = "glm4"
+cloud_model_id = "zai-org/GLM-4.6V-Flash"
+source_url = "https://huggingface.co/zai-org/GLM-4.6V-Flash"
+target = "cloud"
+architecture = "moe"
+active_params = "3.5B"
+total_params = "9.4B"
+provider_format = "openai-compat"
+required_env_vars = ["GLM46V_ENDPOINT", "GLM46V_API_KEY"]
+
+# ── MET-61: moonshotai/Kimi-VL-A3B-Instruct (VLM, existing local GGUF + cloud) ──
+[[model]]
+slug = "kimi_vl_a3b_cloud"
+family = "deepseek2"
+cloud_model_id = "moonshotai/Kimi-VL-A3B-Instruct"
+source_url = "https://huggingface.co/moonshotai/Kimi-VL-A3B-Instruct"
+target = "cloud"
+architecture = "moe"
+active_params = "2.8B"
+total_params = "16B"
+provider_format = "openai-compat"
+required_env_vars = ["KIMIVL_ENDPOINT", "KIMIVL_API_KEY"]
+
+# ── MET-62: google/gemma-4-26b-a4b-it (MoE, existing local GGUF + cloud) ──
+[[model]]
+slug = "gemma4_26b_a4b_cloud"
+family = "gemma4"
+cloud_model_id = "google/gemma-4-26B-A4B-it"
+source_url = "https://huggingface.co/google/gemma-4-26B-A4B-it"
+target = "cloud"
+architecture = "moe"
+active_params = "4B"
+total_params = "26B"
+provider_format = "vertex-ai"
+required_env_vars = ["VERTEX_AI_PROJECT_ID", "VERTEX_AI_LOCATION", "VERTEX_AI_ENDPOINT_ID"]
+
+# ── MET-63: Abiray/ZAYA1-8B (MoE, existing local GGUF + cloud) ──
+[[model]]
+slug = "zaya1_8b_cloud"
+family = "zaya"
+cloud_model_id = "Zyphra/ZAYA1-reasoning-base"
+source_url = "https://huggingface.co/Zyphra/ZAYA1-reasoning-base"
+target = "cloud"
+architecture = "moe"
+active_params = "1B"
+total_params = "8B"
+provider_format = "openai-compat"
+required_env_vars = ["ZAYA_ENDPOINT", "ZAYA_API_KEY"]
+
+# ── MET-64: nvidia/Marco-Nano-Base (MoE, existing local GGUF + cloud) ──
+[[model]]
+slug = "marco_nano_base_cloud"
+family = "qwen3_moe"
+cloud_model_id = "nvidia/Marco-Nano-Base"
+source_url = "https://huggingface.co/nvidia/Marco-Nano-Base"
+target = "cloud"
+architecture = "moe"
+active_params = "527M"
+total_params = "2.3B"
+provider_format = "nvcf-nim"
+required_env_vars = ["MARCO_NIM_ENDPOINT", "MARCO_NIM_API_KEY"]

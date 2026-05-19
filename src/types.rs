@@ -144,3 +144,64 @@ pub struct ModelOutput {
     pub selected_experts: Option<Vec<usize>>,
     pub reasoning: Option<String>,
 }
+
+// ── Cloud model metadata ──────────────────────────────────────────────────
+
+/// Execution target for a model in the SAAQ lineup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelTarget {
+    Local,
+    Cloud,
+}
+
+/// Model architecture classification for lineup metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelArchitectureClass {
+    Dense,
+    Moe,
+}
+
+/// Metadata stub for a cloud-hosted model that cannot be executed locally.
+///
+/// Cloud models delegate execution to Dioscuri-Cloud. corinth-canal is
+/// responsible for recording the candidate in experiment manifests and
+/// fail-fast behaviour when the required cloud provider env vars are unset.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudModelSpec {
+    /// Directory-safe identifier used in artifact paths.
+    pub slug: String,
+    /// Model family for routing tensor selection.
+    pub family: Option<ModelFamily>,
+    /// Provider / model ID (e.g. `nvidia/nemotron-nano-4b`).
+    pub cloud_model_id: String,
+    /// Canonical source URL (model card or provider listing).
+    pub source_url: String,
+    /// Execution target.
+    pub target: ModelTarget,
+    /// Architecture class.
+    pub architecture: ModelArchitectureClass,
+    /// Known active parameter count (e.g. `"2.4B"`).
+    pub active_params: String,
+    /// Known total parameter count (e.g. `"8B"`).
+    pub total_params: String,
+    /// Expected provider / runtime format on the cloud side
+    /// (e.g. `"nvcf-nim"`, `"openai-compat"`, `"fp8-safetensors"`).
+    pub provider_format: String,
+    /// Environment variable names required for cloud execution.
+    /// corinth-canal checks these at startup; if any are unset, execution
+    /// fails fast with a diagnostic message. Values never appear in artifacts.
+    #[serde(default)]
+    pub required_env_vars: Vec<String>,
+}
+
+impl CloudModelSpec {
+    /// Returns `true` when every env var in `required_env_vars` is set
+    /// to a non-empty string.
+    pub fn cloud_provider_available(&self) -> bool {
+        self.required_env_vars
+            .iter()
+            .all(|var| std::env::var(var).map_or(false, |v| !v.is_empty()))
+    }
+}

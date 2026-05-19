@@ -113,6 +113,233 @@ pub fn parse_routing_mode(value: &str) -> Option<RoutingMode> {
     }
 }
 
+// ── Cloud model metadata ──────────────────────────────────────────────────
+
+/// Parsed representation of a cloud model entry from
+/// `configs/saaq15_cloud_lineup.toml`.
+#[derive(Debug, Clone)]
+pub struct CloudModelEntry {
+    pub slug: String,
+    pub family: Option<ModelFamily>,
+    pub cloud_model_id: String,
+    pub source_url: String,
+    pub architecture: String,
+    pub active_params: String,
+    pub total_params: String,
+    pub provider_format: String,
+    pub required_env_vars: Vec<String>,
+    /// Whether all `required_env_vars` are set to non-empty values.
+    pub provider_available: bool,
+}
+
+/// Parse a `configs/saaq15_cloud_lineup.toml` file and return every entry.
+///
+/// Unknown families are reported via stderr but accepted (family is left
+/// `None` for probe-based inference downstream).
+///
+/// ---
+/// *Goose agent (deepseek-v4-pro model) — parsing cloud lineup for
+/// Dioscuri-Cloud delegation metadata.*
+pub fn load_cloud_lineup(
+    path: &Path,
+) -> Result<Vec<CloudModelEntry>, Box<dyn std::error::Error>> {
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct RawCloudLineup {
+        #[serde(default)]
+        model: Vec<RawCloudModel>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct RawCloudModel {
+        slug: String,
+        #[serde(default)]
+        family: String,
+        cloud_model_id: String,
+        source_url: String,
+        target: String,
+        architecture: String,
+        active_params: String,
+        total_params: String,
+        provider_format: String,
+        #[serde(default)]
+        required_env_vars: Vec<String>,
+    }
+
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let parsed: RawCloudLineup = toml::from_str(&raw)
+        .map_err(|e| format!("parse {}: {e}", path.display()))?;
+
+    let mut out = Vec::with_capacity(parsed.model.len());
+    for entry in parsed.model {
+        let family = parse_family_slug(&entry.family);
+        if family.is_none() && !entry.family.is_empty() {
+            eprintln!(
+                "cloud_lineup: unknown family '{}' for slug={}; leaving family inference to probe",
+                entry.family, entry.slug
+            );
+        }
+        let provider_available = entry
+            .required_env_vars
+            .iter()
+            .all(|var| std::env::var(var).map_or(false, |v| !v.is_empty()));
+
+        if !provider_available {
+            let unset: Vec<_> = entry
+                .required_env_vars
+                .iter()
+                .filter(|var| {
+                    std::env::var(var).map_or(true, |v| v.is_empty())
+                })
+                .collect();
+            eprintln!(
+                "cloud_lineup: skipping slug={} ({}): missing env vars: {}",
+                entry.slug,
+                entry.cloud_model_id,
+                unset.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            );
+        }
+
+        out.push(CloudModelEntry {
+            slug: entry.slug,
+            family,
+            cloud_model_id: entry.cloud_model_id,
+            source_url: entry.source_url,
+            architecture: entry.architecture,
+            active_params: entry.active_params,
+            total_params: entry.total_params,
+            provider_format: entry.provider_format,
+            required_env_vars: entry.required_env_vars,
+            provider_available,
+        });
+    }
+    Ok(out)
+}
+
+/// Fail-fast guard for cloud model execution.
+///
+/// When `provider_available` is `false`, returns an error describing the
+/// missing env vars. Callers in the SAAQ runner should check this before
+/// attempting any cloud-backed forward passes so that the artifact manifest
+/// can record the skip reason.
+///
+/// corinth-canal does not create cloud resources — it delegates execution
+/// to Dioscuri-Cloud. This guard only validates that the required env vars
+/// are present.
+///
+/// ---
+/// *Goose agent (deepseek-v4-pro model) — implementing cloud execution guard
+/// for fail-fast behavior on missing provider configuration.*
+pub fn cloud_execution_guard(entry: &CloudModelEntry) -> Result<(), String> {
+    if entry.provider_available {
+        return Ok(());
+    }
+    let unset: Vec<_> = entry
+        .required_env_vars
+        .iter()
+        .filter(|var| std::env::var(var).map_or(true, |v| v.is_empty()))
+        .collect();
+    Err(format!(
+        "cloud model '{}' ({}) cannot execute: required env vars not set: {}. \
+         Cloud execution is delegated to Dioscuri-Cloud; configure these env \
+         vars in your deployment environment.",
+        entry.slug,
+        entry.cloud_model_id,
+        unset.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+    ))
+}
+
+/// Load the cloud lineup path from the `CLOUD_LINEUP_CONFIG` env var.
+/// Returns `None` when unset or empty.
+pub fn cloud_lineup_path_from_env() -> Option<PathBuf> {
+    std::env::var("CLOUD_LINEUP_CONFIG")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from)
+}
+
+// ── Safetensors manifest lineup ───────────────────────────────────────────
+
+/// Parsed representation of a safetensors model entry from
+/// `configs/safetensors_lineup.toml`.
+#[derive(Debug, Clone)]
+pub struct SafetensorsModelEntry {
+    pub slug: String,
+    pub family: Option<ModelFamily>,
+    pub path: PathBuf,
+    pub target: String,
+}
+
+/// Parse a `configs/safetensors_lineup.toml` file and return every entry
+/// whose path exists on disk. Missing paths are skipped with a warning.
+///
+/// ---
+/// *Goose agent (deepseek-v4-pro model) — adding safetensors lineup parser
+/// for batch manifest generation of local safetensors checkpoints.*
+pub fn load_safetensors_lineup(
+    path: &Path,
+) -> Result<Vec<SafetensorsModelEntry>, Box<dyn std::error::Error>> {
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct RawSafetensorsLineup {
+        #[serde(default)]
+        model: Vec<RawSafetensorsModel>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct RawSafetensorsModel {
+        slug: String,
+        #[serde(default)]
+        family: String,
+        path: String,
+        target: String,
+    }
+
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let parsed: RawSafetensorsLineup = toml::from_str(&raw)
+        .map_err(|e| format!("parse {}: {e}", path.display()))?;
+
+    let mut out = Vec::with_capacity(parsed.model.len());
+    for entry in parsed.model {
+        let trimmed_path = entry.path.trim();
+        let entry_path = PathBuf::from(trimmed_path);
+        if !entry_path.exists() {
+            eprintln!(
+                "safetensors_lineup: skipping slug={}: path not found: {}",
+                entry.slug, trimmed_path
+            );
+            continue;
+        }
+        let family = parse_family_slug(&entry.family);
+        if family.is_none() && !entry.family.is_empty() {
+            eprintln!(
+                "safetensors_lineup: unknown family '{}' for slug={}",
+                entry.family, entry.slug
+            );
+        }
+        out.push(SafetensorsModelEntry {
+            slug: entry.slug,
+            family,
+            path: entry_path,
+            target: entry.target,
+        });
+    }
+    Ok(out)
+}
+
+/// Load the safetensors lineup path from the `SAFETENSORS_LINEUP_CONFIG`
+/// env var. Returns `None` when unset or empty.
+pub fn safetensors_lineup_path_from_env() -> Option<PathBuf> {
+    std::env::var("SAFETENSORS_LINEUP_CONFIG")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from)
+}
+
 pub fn saaq_update_rule_from_env() -> SaaqUpdateRule {
     match std::env::var("SAAQ_RULE")
         .unwrap_or_else(|_| "saaq_v1_5".into())
@@ -913,5 +1140,204 @@ mod tests {
             resolve_prompt_embedding_provider(Some("llama_cpp")),
             PromptEmbeddingProvider::SyntheticFallback
         );
+    }
+
+    // ── Cloud lineup tests ─────────────────
+
+    #[test]
+    fn cloud_lineup_parses_valid_toml() {
+        let tmp = std::env::temp_dir().join(format!(
+            "cloud_test_{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &tmp,
+            r#"
+[[model]]
+slug = "test_cloud_model"
+family = "olmoe"
+cloud_model_id = "test/example-model"
+source_url = "https://example.com/model"
+target = "cloud"
+architecture = "moe"
+active_params = "1B"
+total_params = "7B"
+provider_format = "nvcf-nim"
+required_env_vars = ["TEST_ENDPOINT", "TEST_API_KEY"]
+"#,
+        )
+        .unwrap();
+
+        let entries = load_cloud_lineup(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        assert_eq!(e.slug, "test_cloud_model");
+        assert_eq!(e.family, Some(ModelFamily::Olmoe));
+        assert_eq!(e.cloud_model_id, "test/example-model");
+        assert_eq!(e.architecture, "moe");
+        assert_eq!(e.active_params, "1B");
+        assert_eq!(e.total_params, "7B");
+        assert_eq!(e.provider_format, "nvcf-nim");
+        assert_eq!(e.required_env_vars, vec!["TEST_ENDPOINT", "TEST_API_KEY"]);
+        // These env vars won't be set in CI
+        assert!(!e.provider_available);
+    }
+
+    #[test]
+    fn cloud_execution_guard_fails_when_provider_unavailable() {
+        let entry = CloudModelEntry {
+            slug: "test_model".into(),
+            family: Some(ModelFamily::Olmoe),
+            cloud_model_id: "test/model".into(),
+            source_url: "https://example.com".into(),
+            architecture: "moe".into(),
+            active_params: "1B".into(),
+            total_params: "7B".into(),
+            provider_format: "nvcf-nim".into(),
+            required_env_vars: vec!["UNSET_VAR_XYZ".into()],
+            provider_available: false,
+        };
+        let err = cloud_execution_guard(&entry).unwrap_err();
+        assert!(err.contains("UNSET_VAR_XYZ"));
+        assert!(err.contains("Dioscuri-Cloud"));
+    }
+
+    #[test]
+    fn cloud_execution_guard_passes_when_provider_available() {
+        let entry = CloudModelEntry {
+            slug: "test_model".into(),
+            family: Some(ModelFamily::Olmoe),
+            cloud_model_id: "test/model".into(),
+            source_url: "https://example.com".into(),
+            architecture: "moe".into(),
+            active_params: "1B".into(),
+            total_params: "7B".into(),
+            provider_format: "nvcf-nim".into(),
+            required_env_vars: vec![],
+            provider_available: true,
+        };
+        assert!(cloud_execution_guard(&entry).is_ok());
+    }
+
+    #[test]
+    fn cloud_lineup_unknown_family_reported_on_stderr() {
+        let tmp = std::env::temp_dir().join(format!(
+            "cloud_unknown_{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &tmp,
+            r#"
+[[model]]
+slug = "unknown_family_model"
+family = "totally_fake_family"
+cloud_model_id = "fake/model"
+source_url = "https://example.com"
+target = "cloud"
+architecture = "dense"
+active_params = "100M"
+total_params = "100M"
+provider_format = "rest"
+"#,
+        )
+        .unwrap();
+
+        let entries = load_cloud_lineup(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].family.is_none());
+    }
+
+    #[test]
+    fn cloud_lineup_path_from_env_returns_none_when_unset() {
+        std::env::remove_var("CLOUD_LINEUP_CONFIG");
+        assert!(cloud_lineup_path_from_env().is_none());
+    }
+
+    // ── Safetensors lineup tests ─────────
+
+    #[test]
+    fn safetensors_lineup_parses_valid_toml() {
+        let tmp = std::env::temp_dir().join(format!(
+            "safetensors_test_{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // Use a path that actually exists so it isn't skipped
+        let existing_file = std::env::temp_dir().join(format!(
+            "st_dummy_{}.safetensors",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&existing_file, b"test").unwrap();
+
+        std::fs::write(
+            &tmp,
+            format!(
+                r#"
+[[model]]
+slug = "test_st_model"
+family = "olmoe"
+path = "{}"
+target = "local"
+"#,
+                existing_file.display()
+            ),
+        )
+        .unwrap();
+
+        let entries = load_safetensors_lineup(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(&existing_file);
+
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        assert_eq!(e.slug, "test_st_model");
+        assert_eq!(e.family, Some(ModelFamily::Olmoe));
+        assert_eq!(e.target, "local");
+    }
+
+    #[test]
+    fn safetensors_lineup_skips_missing_paths() {
+        let tmp = std::env::temp_dir().join(format!(
+            "st_missing_{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &tmp,
+            r#"
+[[model]]
+slug = "missing_model"
+family = "olmoe"
+path = "/nonexistent/path/model.safetensors"
+target = "local"
+"#,
+        )
+        .unwrap();
+
+        let entries = load_safetensors_lineup(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn safetensors_lineup_path_from_env_returns_none_when_unset() {
+        std::env::remove_var("SAFETENSORS_LINEUP_CONFIG");
+        assert!(safetensors_lineup_path_from_env().is_none());
     }
 }

@@ -98,11 +98,70 @@ actual `ggml_type` of `blk.0.attn_q.weight`, not on the filename suffix.
 The example also writes `<output_root>/synapse_diagnostic.json` for a structured
 record of the same fields.
 
+## Cloud model lineup
+
+Cloud model execution is delegated to Dioscuri-Cloud. corinth-canal is
+responsible for model selection, experiment metadata stamping, and fail-fast
+validation — not for infrastructure provisioning.
+
+### Cloud lineup config
+
+| Profile | Command |
+|---------|---------|
+| Load cloud lineup, fail-fast on missing env vars | `CLOUD_LINEUP_CONFIG=configs/saaq15_cloud_lineup.toml just saaq` |
+
+Each cloud entry carries:
+
+- `cloud_model_id` — provider-qualified identifier passed to Dioscuri-Cloud
+- `source_url` — canonical model card
+- `target` — always `"cloud"`
+- `architecture` — `"moe"` or `"dense"`
+- `active_params` / `total_params` — informational parameter counts
+- `provider_format` — expected runtime format (`nvcf-nim`, `openai-compat`, `vertex-ai`, `watsonx-saas`, `fp8-safetensors`)
+- `required_env_vars` — env var names that must be set for execution
+
+### SAAQ campaign tags
+
+Cloud runs in artifact manifests are stamped with:
+
+```text
+synthetic/off
+csv/off
+csv/on
+SAAQ_RULE=saaq_v1_5
+REPEAT_COUNT=2
+```
+
+Artifact paths for cloud candidates use the slug prefixed with `cloud_` to
+distinguish them from local GGUF runs.
+
+### Fail-fast behaviour
+
+When any `required_env_vars` is unset or empty, the runner skips that
+candidate and records the skip reason in the run manifest. No partial
+execution is attempted.
+
 ## Safetensors manifest
 
 | Profile | Command |
 |---------|---------|
-| Inspect a Safetensors checkpoint or shard directory | `cargo run --example safetensors_manifest --no-default-features -- <checkpoint-or-dir> artifacts/safetensors_manifest.json` |
+| Inspect a single Safetensors checkpoint | `cargo run --example safetensors_manifest --no-default-features -- <checkpoint-or-dir> artifacts/safetensors_manifest.json` |
+| Batch manifest generation from lineup | `SAFETENSORS_LINEUP_CONFIG=configs/safetensors_lineup.toml cargo run --example safetensors_manifest --no-default-features` |
+
+The safetensors lineup (`configs/safetensors_lineup.toml`) drives batch
+inspection of local safetensors checkpoints. Each entry records a slug,
+family, and absolute path to a `.safetensors` file, `.safetensors.index.json`,
+or shard directory. Missing paths are skipped with a warning.
+
+Local entries onboarded:
+
+| Slug | Model | Shards |
+|------|-------|--------|
+| `nemotron_3_nano_4b` | nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16 | 1 |
+| `granite_3_1_3b_a800m` | ibm-granite/granite-3.1-3b-a800m-base | 2 |
+| `trinity_nano_base` | arcee-ai/Trinity-Nano-Base | 7 |
+| `phi_tiny_moe_instruct` | microsoft/Phi-tiny-MoE-instruct | 2 |
+| `moonlight_16b_a3b_bnb_4bit` | slowfastai/Moonlight-16B-A3B-bnb-4bit | 2 |
 
 Use Safetensors manifests when the goal is checkpoint anatomy: tensor names,
 dtypes, shapes, byte sizes, source shards, and recognizable MoE router/expert
@@ -172,3 +231,5 @@ Model families supported by the GGUF adapter layer:
 - `Gemma4`
 - `DeepSeek2`
 - `LlamaMoe`
+- `Zaya`
+- `Glm4`

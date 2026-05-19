@@ -6,7 +6,7 @@
 #
 # Fields:
 #   slug          directory-safe identifier (used in artifact paths)
-#   family        one of: olmoe | qwen3_moe | gemma4 | deepseek2 | llama_moe
+#   family        one of: olmoe | qwen3_moe | gemma4 | deepseek2 | llama_moe | zaya | glm4
 #   path          absolute path to a GGUF checkpoint
 #   routing_mode  optional: "spiking_sim" | "dense_sim" | "stub_uniform"
 #                 unset => ModelConfig::routing_mode default (SpikingSim)
