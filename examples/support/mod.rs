@@ -240,14 +240,14 @@ pub fn load_cloud_lineup(
 /// *Goose agent (deepseek-v4-pro model) — implementing cloud execution guard
 /// for fail-fast behavior on missing provider configuration.*
 pub fn cloud_execution_guard(entry: &CloudModelEntry) -> Result<(), String> {
-    if entry.provider_available {
-        return Ok(());
-    }
     let unset: Vec<_> = entry
         .required_env_vars
         .iter()
         .filter(|var| std::env::var(var).map_or(true, |v| v.is_empty()))
         .collect();
+    if unset.is_empty() {
+        return Ok(());
+    }
     Err(format!(
         "cloud model '{}' ({}) cannot execute: required env vars not set: {}. \
          Cloud execution is delegated to Dioscuri-Cloud; configure these env \
