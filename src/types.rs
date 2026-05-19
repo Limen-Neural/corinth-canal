@@ -16,6 +16,8 @@ pub enum ModelFamily {
     Gemma4,
     DeepSeek2,
     LlamaMoe,
+    Zaya,
+    Glm4,
 }
 
 impl ModelFamily {
@@ -26,6 +28,8 @@ impl ModelFamily {
             Self::Gemma4 => "gemma4",
             Self::DeepSeek2 => "deepseek2",
             Self::LlamaMoe => "llama_moe",
+            Self::Zaya => "zaya",
+            Self::Glm4 => "glm4",
         }
     }
 }

@@ -176,6 +176,8 @@ fn infer_family(
         "gemma4" => ModelFamily::Gemma4,
         "deepseek2" => ModelFamily::DeepSeek2,
         "llama" => ModelFamily::LlamaMoe,
+        "zaya" => ModelFamily::Zaya,
+        "glm4" => ModelFamily::Glm4,
         other => {
             return Err(HybridError::UnsupportedFormat(format!(
                 "unsupported GGUF architecture '{other}' in '{path}'"
