@@ -12,8 +12,8 @@ LLM-models-onboarding branch.*
 
 ## Configuration
 
-Cloud model metadata lives in `configs/saaq15_cloud_lineup.toml`. Point the
-runner at it with:
+Cloud model metadata lives in `configs/saaq15_cloud_lineup.toml`. Helper
+parsing/validation lives in `examples/support/mod.rs` and can be referenced via:
 
 ```bash
 CLOUD_LINEUP_CONFIG=configs/saaq15_cloud_lineup.toml
@@ -34,27 +34,12 @@ CLOUD_LINEUP_CONFIG=configs/saaq15_cloud_lineup.toml
 | MET-63 | `zaya1_8b_cloud` | Zyphra/ZAYA1-reasoning-base | moe | 1B | openai-compat |
 | MET-64 | `marco_nano_base_cloud` | nvidia/Marco-Nano-Base | moe | 527M | nvcf-nim |
 
-## SAAQ campaign tags
-
-Every cloud run stamps its artifact manifest with:
-
-| Tag | Value |
-|-----|-------|
-| `SAAQ_RULE` | `saaq_v1_5` |
-| `TELEMETRY_SOURCE` | `synthetic` or `csv` |
-| `HEARTBEAT` | `off` or `on` |
-| `REPEAT_COUNT` | `2` |
-
-Artifact directory names use the `cloud_` prefix to distinguish cloud
-candidates from local GGUF runs.
-
 ## Fail-fast behaviour
 
-When any `required_env_vars` entry is unset or empty at startup:
+When any `required_env_vars` entry is unset or empty during helper parsing:
 
-1. The runner emits a diagnostic to stderr listing the missing vars.
+1. The parser emits a diagnostic to stderr listing the missing vars.
 2. The candidate is skipped — no partial execution is attempted.
-3. A skip reason is recorded in the run manifest.
 
 Example diagnostic:
 
@@ -62,6 +47,8 @@ Example diagnostic:
 cloud_lineup: skipping slug=nemotron_3_nano_4b_cloud (nvidia/nvidia-nemotron-3-nano-4B-BF16):
 missing env vars: NEMOTRON_NIM_ENDPOINT, NEMOTRON_NIM_API_KEY
 ```
+
+Main runner integration for cloud lineup metadata is intentionally separate.
 
 ## Required env vars by provider
 

@@ -1,15 +1,12 @@
 # corinth-canal SAAQ 1.5 cloud model lineup.
 #
-# Loaded by examples/saaq_latent_calibration.rs when
-# CLOUD_LINEUP_CONFIG points at this file (or when cloud sweep mode is
-# enabled). Each [[model]] entry is a cloud metadata stub — corinth-canal
+# Parsed by cloud lineup helpers in examples/support/mod.rs.
+# This file is cloud metadata scaffolding; main example runners may wire it
+# in separately. Each [[model]] entry is a cloud metadata stub — corinth-canal
 # does not create, provision, or tear down cloud resources.
 #
 # Cloud execution is delegated to Dioscuri-Cloud. This file records
-# metadata that corinth-canal stamps into experiment manifests and uses
-# for fail-fast validation at startup. When a model's required env vars
-# are unset, the runner emits a diagnostic and skips the candidate rather
-# than attempting partial execution.
+# metadata for fail-fast validation of required provider env vars.
 #
 # Fields:
 #   slug                directory-safe identifier (used in artifact paths)

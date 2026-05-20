@@ -174,12 +174,21 @@ pub fn load_cloud_lineup(
 
     let mut out = Vec::with_capacity(parsed.model.len());
     for entry in parsed.model {
-        if entry.target.trim().to_ascii_lowercase() != "cloud" {
-            eprintln!(
-                "cloud_lineup: skipping slug={}: expected target=\"cloud\", got \"{}\"",
+        let target = entry.target.trim().to_ascii_lowercase();
+        if target != "cloud" {
+            return Err(format!(
+                "cloud_lineup: invalid target for slug={}: expected \"cloud\", got \"{}\"",
                 entry.slug, entry.target
-            );
-            continue;
+            )
+            .into());
+        }
+        let architecture = entry.architecture.trim().to_ascii_lowercase();
+        if architecture != "moe" && architecture != "dense" {
+            return Err(format!(
+                "cloud_lineup: invalid architecture for slug={}: expected \"moe\" or \"dense\", got \"{}\"",
+                entry.slug, entry.architecture
+            )
+            .into());
         }
         let family = parse_family_slug(&entry.family);
         if family.is_none() && !entry.family.is_empty() {
@@ -207,6 +216,7 @@ pub fn load_cloud_lineup(
                 entry.cloud_model_id,
                 unset.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
             );
+            continue;
         }
 
         out.push(CloudModelEntry {
@@ -312,6 +322,13 @@ pub fn load_safetensors_lineup(
 
     let mut out = Vec::with_capacity(parsed.model.len());
     for entry in parsed.model {
+        if entry.target.trim().to_ascii_lowercase() != "local" {
+            return Err(format!(
+                "safetensors_lineup: invalid target for slug={}: expected \"local\", got \"{}\"",
+                entry.slug, entry.target
+            )
+            .into());
+        }
         let trimmed_path = entry.path.trim();
         let entry_path = PathBuf::from(trimmed_path);
         if !entry_path.exists() {
@@ -1265,8 +1282,13 @@ provider_format = "rest"
 
     #[test]
     fn cloud_lineup_path_from_env_returns_none_when_unset() {
+        let old = std::env::var_os("CLOUD_LINEUP_CONFIG");
         std::env::remove_var("CLOUD_LINEUP_CONFIG");
         assert!(cloud_lineup_path_from_env().is_none());
+        match old {
+            Some(value) => std::env::set_var("CLOUD_LINEUP_CONFIG", value),
+            None => std::env::remove_var("CLOUD_LINEUP_CONFIG"),
+        }
     }
 
     // ── Safetensors lineup tests ─────────
@@ -1344,7 +1366,12 @@ target = "local"
 
     #[test]
     fn safetensors_lineup_path_from_env_returns_none_when_unset() {
+        let old = std::env::var_os("SAFETENSORS_LINEUP_CONFIG");
         std::env::remove_var("SAFETENSORS_LINEUP_CONFIG");
         assert!(safetensors_lineup_path_from_env().is_none());
+        match old {
+            Some(value) => std::env::set_var("SAFETENSORS_LINEUP_CONFIG", value),
+            None => std::env::remove_var("SAFETENSORS_LINEUP_CONFIG"),
+        }
     }
 }

@@ -108,7 +108,7 @@ validation — not for infrastructure provisioning.
 
 | Profile | Command |
 |---------|---------|
-| Load cloud lineup, fail-fast on missing env vars | `CLOUD_LINEUP_CONFIG=configs/saaq15_cloud_lineup.toml just saaq` |
+| Validate cloud lineup metadata file | `cargo test --no-default-features cloud_lineup -- --nocapture` |
 
 Each cloud entry carries:
 
@@ -120,38 +120,19 @@ Each cloud entry carries:
 - `provider_format` — expected runtime format (`nvcf-nim`, `openai-compat`, `vertex-ai`, `watsonx-saas`, `fp8-safetensors`)
 - `required_env_vars` — env var names that must be set for execution
 
-### SAAQ campaign tags
-
-Cloud runs in artifact manifests are stamped with:
-
-```text
-synthetic/off
-csv/off
-csv/on
-SAAQ_RULE=saaq_v1_5
-REPEAT_COUNT=2
-```
-
-Artifact paths for cloud candidates use the slug prefixed with `cloud_` to
-distinguish them from local GGUF runs.
-
-### Fail-fast behaviour
-
-When any `required_env_vars` is unset or empty, the runner skips that
-candidate and records the skip reason in the run manifest. No partial
-execution is attempted.
+`CLOUD_LINEUP_CONFIG` parsing and cloud execution guards currently live in
+`examples/support/mod.rs`. The main `just saaq` runner path is not yet wired to
+consume cloud lineup config directly.
 
 ## Safetensors manifest
 
 | Profile | Command |
 |---------|---------|
 | Inspect a single Safetensors checkpoint | `cargo run --example safetensors_manifest --no-default-features -- <checkpoint-or-dir> artifacts/safetensors_manifest.json` |
-| Batch manifest generation from lineup | `SAFETENSORS_LINEUP_CONFIG=configs/safetensors_lineup.toml cargo run --example safetensors_manifest --no-default-features` |
 
-The safetensors lineup (`configs/safetensors_lineup.toml`) drives batch
-inspection of local safetensors checkpoints. Each entry records a slug,
-family, and absolute path to a `.safetensors` file, `.safetensors.index.json`,
-or shard directory. Missing paths are skipped with a warning.
+The safetensors lineup (`configs/safetensors_lineup.toml`) is parsed by helper
+utilities in `examples/support/mod.rs`. The `safetensors_manifest` example
+currently uses positional CLI arguments for single-checkpoint inspection.
 
 Local entries onboarded:
 

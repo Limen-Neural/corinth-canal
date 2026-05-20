@@ -1,9 +1,10 @@
 # corinth-canal Safetensors manifest lineup.
 #
-# Loaded by examples/safetensors_manifest.rs when SAFETENSORS_LINEUP_CONFIG
-# points at this file. Each [[model]] entry defines a safetensors checkpoint
-# to inspect — corinth-canal reads only headers and metadata, not tensor
-# payload bytes.
+# Parsed by safetensors lineup helpers in examples/support/mod.rs.
+# The safetensors_manifest example currently accepts positional CLI args for
+# single-checkpoint inspection. Each [[model]] entry defines a safetensors
+# checkpoint to inspect — corinth-canal reads only headers and metadata, not
+# tensor payload bytes.
 #
 # Safetensors inspection is a setup-and-preparation step. The router path
 # (`OlmoeRouter`) remains GGUF-backed. Use safetensors manifests when the
