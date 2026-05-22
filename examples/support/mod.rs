@@ -197,7 +197,7 @@ pub fn load_cloud_lineup(path: &Path) -> Result<Vec<CloudModelEntry>, Box<dyn st
         let provider_available = entry
             .required_env_vars
             .iter()
-            .all(|var| std::env::var(var).map_or(false, |v| !v.is_empty()));
+            .all(|var| std::env::var(var).is_ok_and(|v| !v.is_empty()));
 
         out.push(CloudModelEntry {
             slug: entry.slug,
