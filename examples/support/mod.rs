@@ -7,8 +7,8 @@ pub mod observability;
 #[allow(unused_imports)]
 pub use config::RunConfig;
 pub use lineup::{
-    SafetensorsModelEntry, cloud_execution_guard, cloud_lineup_path_from_env, load_cloud_lineup,
-    load_safetensors_lineup, safetensors_lineup_path_from_env,
+    cloud_execution_guard, cloud_lineup_path_from_env, load_cloud_lineup, load_safetensors_lineup,
+    safetensors_lineup_path_from_env,
 };
 
 use corinth_canal::{

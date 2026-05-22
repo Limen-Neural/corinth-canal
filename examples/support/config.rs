@@ -17,10 +17,10 @@ use corinth_canal::{ModelFamily, SaaqUpdateRule, moe::RoutingMode};
 use serde::Deserialize;
 
 use super::{
-    ResolvedTelemetry, ValidationModelSpec, cloud_lineup_path_from_env, discover_validation_models,
-    env_flag, heartbeat_modes_for_matrix, load_cloud_lineup, load_safetensors_lineup,
-    model_family_override_from_env, parse_family_slug, parse_routing_mode, prompt_profile_slug,
-    prompt_text_for_profile, repeat_count_from_env, resolve_telemetry_source,
+    ResolvedTelemetry, ValidationModelSpec, cloud_execution_guard, cloud_lineup_path_from_env,
+    discover_validation_models, env_flag, heartbeat_modes_for_matrix, load_cloud_lineup,
+    load_safetensors_lineup, model_family_override_from_env, parse_family_slug, parse_routing_mode,
+    prompt_profile_slug, prompt_text_for_profile, repeat_count_from_env, resolve_telemetry_source,
     routing_mode_override_from_env, saaq_update_rule_from_env, safetensors_lineup_path_from_env,
     ticks_from_env,
 };
@@ -119,12 +119,40 @@ fn validate_optional_lineups_from_env() {
     }
 
     if let Some(path) = safetensors_lineup_path_from_env() {
-        load_safetensors_lineup(&path).unwrap_or_else(|err| {
+        let entries = load_safetensors_lineup(&path).unwrap_or_else(|err| {
             panic!(
                 "SAFETENSORS_LINEUP_CONFIG={} could not be loaded: {err}",
                 path.display()
             )
         });
+        for entry in &entries {
+            if entry.slug.trim().is_empty() {
+                panic!(
+                    "SAFETENSORS_LINEUP_CONFIG={} contains an empty slug for path={}",
+                    path.display(),
+                    entry.path.display()
+                );
+            }
+            if !entry.target.eq_ignore_ascii_case("local") {
+                panic!(
+                    "SAFETENSORS_LINEUP_CONFIG={} has invalid target={} for slug={}",
+                    path.display(),
+                    entry.target,
+                    entry.slug
+                );
+            }
+            if !entry.path.exists() {
+                panic!(
+                    "SAFETENSORS_LINEUP_CONFIG={} resolved missing path={} for slug={}",
+                    path.display(),
+                    entry.path.display(),
+                    entry.slug
+                );
+            }
+            if let Some(family) = entry.family {
+                let _ = family.slug();
+            }
+        }
     }
 }
 
