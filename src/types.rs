@@ -205,3 +205,49 @@ impl CloudModelSpec {
             .all(|var| std::env::var(var).is_ok_and(|v| !v.is_empty()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CloudModelSpec, ModelArchitectureClass, ModelFamily, ModelTarget,
+    };
+
+    #[test]
+    fn model_family_slug_covers_new_variants() {
+        assert_eq!(ModelFamily::Zaya.slug(), "zaya");
+        assert_eq!(ModelFamily::Glm4.slug(), "glm4");
+    }
+
+    #[test]
+    fn cloud_model_spec_provider_availability_checks_env_vars() {
+        let missing = "CORINTH_CANAL_TEST_MISSING_PROVIDER_VAR";
+
+        let spec = CloudModelSpec {
+            slug: "test-cloud".into(),
+            family: Some(ModelFamily::Zaya),
+            cloud_model_id: "provider/test-cloud".into(),
+            source_url: "https://example.invalid/test-cloud".into(),
+            target: ModelTarget::Cloud,
+            architecture: ModelArchitectureClass::Moe,
+            active_params: "1B".into(),
+            total_params: "8B".into(),
+            provider_format: "openai-compat".into(),
+            required_env_vars: vec!["PATH".into(), missing.into()],
+        };
+        assert!(!spec.cloud_provider_available());
+
+        let local_dense = CloudModelSpec {
+            slug: "test-local".into(),
+            family: Some(ModelFamily::Glm4),
+            cloud_model_id: "provider/test-local".into(),
+            source_url: "https://example.invalid/test-local".into(),
+            target: ModelTarget::Local,
+            architecture: ModelArchitectureClass::Dense,
+            active_params: "3B".into(),
+            total_params: "3B".into(),
+            provider_format: "nvcf-nim".into(),
+            required_env_vars: vec!["PATH".into()],
+        };
+        assert!(local_dense.cloud_provider_available());
+    }
+}

@@ -196,3 +196,21 @@ fn infer_family(
 
     Ok(inferred)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::infer_family;
+    use crate::types::ModelFamily;
+
+    #[test]
+    fn infer_family_supports_zaya_and_glm4_architectures() {
+        assert_eq!(
+            infer_family("zaya", None, "test.gguf").unwrap(),
+            ModelFamily::Zaya
+        );
+        assert_eq!(
+            infer_family("glm4", None, "test.gguf").unwrap(),
+            ModelFamily::Glm4
+        );
+    }
+}
