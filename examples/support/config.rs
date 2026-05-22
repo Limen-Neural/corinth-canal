@@ -108,7 +108,13 @@ fn validate_optional_lineups_from_env() {
             )
         });
         for entry in &entries {
-            let _ = cloud_execution_guard(entry);
+            cloud_execution_guard(entry).unwrap_or_else(|err| {
+                panic!(
+                    "CLOUD_LINEUP_CONFIG={} failed validation for slug={}: {err}",
+                    path.display(),
+                    entry.slug
+                )
+            });
         }
     }
 
