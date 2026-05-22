@@ -199,25 +199,6 @@ pub fn load_cloud_lineup(path: &Path) -> Result<Vec<CloudModelEntry>, Box<dyn st
             .iter()
             .all(|var| std::env::var(var).map_or(false, |v| !v.is_empty()));
 
-        if !provider_available {
-            let unset: Vec<_> = entry
-                .required_env_vars
-                .iter()
-                .filter(|var| std::env::var(var).map_or(true, |v| v.is_empty()))
-                .collect();
-            eprintln!(
-                "cloud_lineup: skipping slug={} ({}): missing env vars: {}",
-                entry.slug,
-                entry.cloud_model_id,
-                unset
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            continue;
-        }
-
         out.push(CloudModelEntry {
             slug: entry.slug,
             family,
