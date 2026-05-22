@@ -140,9 +140,7 @@ pub struct CloudModelEntry {
 /// ---
 /// *Goose agent (deepseek-v4-pro model) — parsing cloud lineup for
 /// Dioscuri-Cloud delegation metadata.*
-pub fn load_cloud_lineup(
-    path: &Path,
-) -> Result<Vec<CloudModelEntry>, Box<dyn std::error::Error>> {
+pub fn load_cloud_lineup(path: &Path) -> Result<Vec<CloudModelEntry>, Box<dyn std::error::Error>> {
     #[derive(Debug, serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct RawCloudLineup {
@@ -167,10 +165,9 @@ pub fn load_cloud_lineup(
         required_env_vars: Vec<String>,
     }
 
-    let raw = std::fs::read_to_string(path)
-        .map_err(|e| format!("read {}: {e}", path.display()))?;
-    let parsed: RawCloudLineup = toml::from_str(&raw)
-        .map_err(|e| format!("parse {}: {e}", path.display()))?;
+    let raw = std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let parsed: RawCloudLineup =
+        toml::from_str(&raw).map_err(|e| format!("parse {}: {e}", path.display()))?;
 
     let mut out = Vec::with_capacity(parsed.model.len());
     for entry in parsed.model {
@@ -206,15 +203,17 @@ pub fn load_cloud_lineup(
             let unset: Vec<_> = entry
                 .required_env_vars
                 .iter()
-                .filter(|var| {
-                    std::env::var(var).map_or(true, |v| v.is_empty())
-                })
+                .filter(|var| std::env::var(var).map_or(true, |v| v.is_empty()))
                 .collect();
             eprintln!(
                 "cloud_lineup: skipping slug={} ({}): missing env vars: {}",
                 entry.slug,
                 entry.cloud_model_id,
-                unset.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                unset
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
             continue;
         }
@@ -264,7 +263,11 @@ pub fn cloud_execution_guard(entry: &CloudModelEntry) -> Result<(), String> {
          vars in your deployment environment.",
         entry.slug,
         entry.cloud_model_id,
-        unset.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+        unset
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
     ))
 }
 
@@ -315,10 +318,9 @@ pub fn load_safetensors_lineup(
         target: String,
     }
 
-    let raw = std::fs::read_to_string(path)
-        .map_err(|e| format!("read {}: {e}", path.display()))?;
-    let parsed: RawSafetensorsLineup = toml::from_str(&raw)
-        .map_err(|e| format!("parse {}: {e}", path.display()))?;
+    let raw = std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let parsed: RawSafetensorsLineup =
+        toml::from_str(&raw).map_err(|e| format!("parse {}: {e}", path.display()))?;
 
     let mut out = Vec::with_capacity(parsed.model.len());
     for entry in parsed.model {

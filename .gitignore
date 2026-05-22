@@ -41,3 +41,4 @@ coverage/
 # Scripts
 /scripts/*
 configs/local_lineup.toml
+configs/safetensors_lineup.toml

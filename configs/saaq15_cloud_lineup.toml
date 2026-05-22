@@ -7,6 +7,11 @@
 #
 # Cloud execution is delegated to Dioscuri-Cloud. This file records
 # metadata for fail-fast validation of required provider env vars.
+# Wire-up note: this file is NOT yet loaded by `examples/saaq_latent_calibration.rs`.
+# The parsing helpers (`load_cloud_lineup`, `cloud_execution_guard`) exist
+# in `examples/support/mod.rs` and are tested, but the runner does not
+# invoke them yet. For now this config serves as a documented inventory
+# and validator for `cloud_execution_guard` unit tests.
 #
 # Fields:
 #   slug                directory-safe identifier (used in artifact paths)

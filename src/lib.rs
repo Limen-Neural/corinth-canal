@@ -87,8 +87,8 @@ pub use latent::{
 };
 pub use telemetry::TelemetryEncoder;
 pub use types::{
-    CloudModelSpec, ModelArchitectureClass, ModelTarget, EMBEDDING_DIM, HeartbeatConfig, ModelFamily,
-    TelemetrySnapshot,
+    CloudModelSpec, EMBEDDING_DIM, HeartbeatConfig, ModelArchitectureClass, ModelFamily,
+    ModelTarget, TelemetrySnapshot,
 };
 
 pub mod tensor;
