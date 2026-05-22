@@ -202,6 +202,6 @@ impl CloudModelSpec {
     pub fn cloud_provider_available(&self) -> bool {
         self.required_env_vars
             .iter()
-            .all(|var| std::env::var(var).map_or(false, |v| !v.is_empty()))
+            .all(|var| std::env::var(var).is_ok_and(|v| !v.is_empty()))
     }
 }
