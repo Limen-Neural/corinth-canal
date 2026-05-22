@@ -197,16 +197,16 @@ pub fn load_cloud_lineup(path: &Path) -> Result<Vec<CloudModelEntry>, Box<dyn st
         let provider_available = entry
             .required_env_vars
             .iter()
-            .all(|var| std::env::var(var).map_or(false, |v| !v.is_empty()));
+            .all(|var| std::env::var(var).is_ok_and(|v| !v.is_empty()));
 
         if !provider_available {
             let unset: Vec<_> = entry
                 .required_env_vars
                 .iter()
-                .filter(|var| std::env::var(var).map_or(true, |v| v.is_empty()))
+                .filter(|var| !std::env::var(var).is_ok_and(|v| !v.is_empty()))
                 .collect();
             eprintln!(
-                "cloud_lineup: skipping slug={} ({}): missing env vars: {}",
+                "cloud_lineup: provider unavailable for slug={} ({}): missing env vars: {}",
                 entry.slug,
                 entry.cloud_model_id,
                 unset
@@ -215,7 +215,6 @@ pub fn load_cloud_lineup(path: &Path) -> Result<Vec<CloudModelEntry>, Box<dyn st
                     .collect::<Vec<_>>()
                     .join(", ")
             );
-            continue;
         }
 
         out.push(CloudModelEntry {
@@ -252,7 +251,7 @@ pub fn cloud_execution_guard(entry: &CloudModelEntry) -> Result<(), String> {
     let unset: Vec<_> = entry
         .required_env_vars
         .iter()
-        .filter(|var| std::env::var(var).map_or(true, |v| v.is_empty()))
+        .filter(|var| !std::env::var(var).is_ok_and(|v| !v.is_empty()))
         .collect();
     if unset.is_empty() {
         return Ok(());
