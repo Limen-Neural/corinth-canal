@@ -192,7 +192,6 @@ pub struct CloudModelSpec {
     /// Environment variable names required for cloud execution.
     /// corinth-canal checks these at startup; if any are unset, execution
     /// fails fast with a diagnostic message. Values never appear in artifacts.
-    #[serde(default)]
     pub required_env_vars: Vec<String>,
 }
 
@@ -247,5 +246,25 @@ mod tests {
             required_env_vars: vec!["PATH".into()],
         };
         assert!(local_dense.cloud_provider_available());
+    }
+
+    #[test]
+    fn cloud_model_spec_deserialization_requires_required_env_vars() {
+        let err = serde_json::from_str::<CloudModelSpec>(
+            r#"{
+                "slug":"test-cloud",
+                "family":"Glm4",
+                "cloud_model_id":"provider/test-cloud",
+                "source_url":"https://example.invalid/test-cloud",
+                "target":"cloud",
+                "architecture":"moe",
+                "active_params":"1B",
+                "total_params":"8B",
+                "provider_format":"openai-compat"
+            }"#,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("required_env_vars"));
     }
 }

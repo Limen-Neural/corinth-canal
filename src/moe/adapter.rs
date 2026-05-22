@@ -177,7 +177,7 @@ fn infer_family(
         "deepseek2" => ModelFamily::DeepSeek2,
         "llama" => ModelFamily::LlamaMoe,
         "zaya" => ModelFamily::Zaya,
-        "glm4" => ModelFamily::Glm4,
+        "glm4" | "glm4moe" => ModelFamily::Glm4,
         other => {
             return Err(HybridError::UnsupportedFormat(format!(
                 "unsupported GGUF architecture '{other}' in '{path}'"
@@ -210,6 +210,10 @@ mod tests {
         );
         assert_eq!(
             infer_family("glm4", None, "test.gguf").unwrap(),
+            ModelFamily::Glm4
+        );
+        assert_eq!(
+            infer_family("glm4moe", None, "test.gguf").unwrap(),
             ModelFamily::Glm4
         );
     }
