@@ -7,7 +7,8 @@ pub mod observability;
 pub use config::RunConfig;
 
 use corinth_canal::{
-    HeartbeatConfig, ModelFamily, SaaqUpdateRule, moe::OlmoeRouter, moe::RoutingMode,
+    CloudModelSpec, HeartbeatConfig, ModelArchitectureClass, ModelFamily, ModelTarget,
+    SaaqUpdateRule, moe::OlmoeRouter, moe::RoutingMode,
 };
 #[cfg(feature = "cuda")]
 use corinth_canal::{model::ModelConfig, projector::ProjectionMode};
@@ -117,23 +118,6 @@ pub fn parse_routing_mode(value: &str) -> Option<RoutingMode> {
 
 // ── Cloud model metadata ──────────────────────────────────────────────────
 
-/// Parsed representation of a cloud model entry from
-/// `configs/saaq15_cloud_lineup.toml`.
-#[derive(Debug, Clone)]
-pub struct CloudModelEntry {
-    pub slug: String,
-    pub family: Option<ModelFamily>,
-    pub cloud_model_id: String,
-    pub source_url: String,
-    pub architecture: String,
-    pub active_params: String,
-    pub total_params: String,
-    pub provider_format: String,
-    pub required_env_vars: Vec<String>,
-    /// Whether all `required_env_vars` are set to non-empty values.
-    pub provider_available: bool,
-}
-
 /// Parse a `configs/saaq15_cloud_lineup.toml` file and return every entry.
 ///
 /// Unknown families are reported via stderr but accepted (family is left
@@ -142,7 +126,7 @@ pub struct CloudModelEntry {
 /// ---
 /// *Goose agent (deepseek-v4-pro model) — parsing cloud lineup for
 /// Dioscuri-Cloud delegation metadata.*
-pub fn load_cloud_lineup(path: &Path) -> Result<Vec<CloudModelEntry>, Box<dyn std::error::Error>> {
+pub fn load_cloud_lineup(path: &Path) -> Result<Vec<CloudModelSpec>, Box<dyn std::error::Error>> {
     #[derive(Debug, serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct RawCloudLineup {
@@ -181,14 +165,17 @@ pub fn load_cloud_lineup(path: &Path) -> Result<Vec<CloudModelEntry>, Box<dyn st
             )
             .into());
         }
-        let architecture = entry.architecture.trim().to_ascii_lowercase();
-        if architecture != "moe" && architecture != "dense" {
-            return Err(format!(
-                "cloud_lineup: invalid architecture for slug={}: expected \"moe\" or \"dense\", got \"{}\"",
-                entry.slug, entry.architecture
-            )
-            .into());
-        }
+        let architecture = match entry.architecture.trim().to_ascii_lowercase().as_str() {
+            "moe" => ModelArchitectureClass::Moe,
+            "dense" => ModelArchitectureClass::Dense,
+            other => {
+                return Err(format!(
+                    "cloud_lineup: invalid architecture for slug={}: expected \"moe\" or \"dense\", got \"{other}\"",
+                    entry.slug
+                )
+                .into());
+            }
+        };
         let family = parse_family_slug(&entry.family);
         if family.is_none() && !entry.family.is_empty() {
             eprintln!(
@@ -196,12 +183,20 @@ pub fn load_cloud_lineup(path: &Path) -> Result<Vec<CloudModelEntry>, Box<dyn st
                 entry.family, entry.slug
             );
         }
-        let provider_available = entry
-            .required_env_vars
-            .iter()
-            .all(|var| std::env::var(var).is_ok_and(|v| !v.is_empty()));
+        let spec = CloudModelSpec {
+            slug: entry.slug.clone(),
+            family,
+            cloud_model_id: entry.cloud_model_id.clone(),
+            source_url: entry.source_url.clone(),
+            target: ModelTarget::Cloud,
+            architecture,
+            active_params: entry.active_params.clone(),
+            total_params: entry.total_params.clone(),
+            provider_format: entry.provider_format.clone(),
+            required_env_vars: entry.required_env_vars.clone(),
+        };
 
-        if !provider_available {
+        if !spec.cloud_provider_available() {
             let unset: Vec<_> = entry
                 .required_env_vars
                 .iter()
@@ -219,18 +214,7 @@ pub fn load_cloud_lineup(path: &Path) -> Result<Vec<CloudModelEntry>, Box<dyn st
             );
         }
 
-        out.push(CloudModelEntry {
-            slug: entry.slug,
-            family,
-            cloud_model_id: entry.cloud_model_id,
-            source_url: entry.source_url,
-            architecture,
-            active_params: entry.active_params,
-            total_params: entry.total_params,
-            provider_format: entry.provider_format,
-            required_env_vars: entry.required_env_vars,
-            provider_available,
-        });
+        out.push(spec);
     }
     Ok(out)
 }
@@ -249,7 +233,7 @@ pub fn load_cloud_lineup(path: &Path) -> Result<Vec<CloudModelEntry>, Box<dyn st
 /// ---
 /// *Goose agent (deepseek-v4-pro model) — implementing cloud execution guard
 /// for fail-fast behavior on missing provider configuration.*
-pub fn cloud_execution_guard(entry: &CloudModelEntry) -> Result<(), String> {
+pub fn cloud_execution_guard(entry: &CloudModelSpec) -> Result<(), String> {
     let unset: Vec<_> = entry
         .required_env_vars
         .iter()

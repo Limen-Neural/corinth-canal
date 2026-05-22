@@ -1,10 +1,10 @@
 #[path = "../examples/support/mod.rs"]
 mod support;
 
-use corinth_canal::ModelFamily;
+use corinth_canal::{ModelArchitectureClass, ModelFamily, ModelTarget};
 use support::{
-    CloudModelEntry, cloud_execution_guard, cloud_lineup_path_from_env, load_cloud_lineup,
-    load_safetensors_lineup, safetensors_lineup_path_from_env,
+    cloud_execution_guard, cloud_lineup_path_from_env, load_cloud_lineup, load_safetensors_lineup,
+    safetensors_lineup_path_from_env,
 };
 
 #[test]
@@ -42,27 +42,28 @@ required_env_vars = ["TEST_ENDPOINT", "TEST_API_KEY"]
     assert_eq!(e.slug, "test_cloud_model");
     assert_eq!(e.family, Some(ModelFamily::Olmoe));
     assert_eq!(e.cloud_model_id, "test/example-model");
-    assert_eq!(e.architecture, "moe");
+    assert_eq!(e.target, ModelTarget::Cloud);
+    assert_eq!(e.architecture, ModelArchitectureClass::Moe);
     assert_eq!(e.active_params, "1B");
     assert_eq!(e.total_params, "7B");
     assert_eq!(e.provider_format, "nvcf-nim");
     assert_eq!(e.required_env_vars, vec!["TEST_ENDPOINT", "TEST_API_KEY"]);
-    assert!(!e.provider_available);
+    assert!(!e.cloud_provider_available());
 }
 
 #[test]
 fn cloud_execution_guard_fails_when_provider_unavailable() {
-    let entry = CloudModelEntry {
+    let entry = corinth_canal::CloudModelSpec {
         slug: "test_model".into(),
         family: Some(ModelFamily::Olmoe),
         cloud_model_id: "test/model".into(),
         source_url: "https://example.com".into(),
-        architecture: "moe".into(),
+        target: ModelTarget::Cloud,
+        architecture: ModelArchitectureClass::Moe,
         active_params: "1B".into(),
         total_params: "7B".into(),
         provider_format: "nvcf-nim".into(),
         required_env_vars: vec!["UNSET_VAR_XYZ".into()],
-        provider_available: false,
     };
     let err = cloud_execution_guard(&entry).unwrap_err();
     assert!(err.contains("UNSET_VAR_XYZ"));
@@ -71,17 +72,17 @@ fn cloud_execution_guard_fails_when_provider_unavailable() {
 
 #[test]
 fn cloud_execution_guard_passes_when_provider_available() {
-    let entry = CloudModelEntry {
+    let entry = corinth_canal::CloudModelSpec {
         slug: "test_model".into(),
         family: Some(ModelFamily::Olmoe),
         cloud_model_id: "test/model".into(),
         source_url: "https://example.com".into(),
-        architecture: "moe".into(),
+        target: ModelTarget::Cloud,
+        architecture: ModelArchitectureClass::Moe,
         active_params: "1B".into(),
         total_params: "7B".into(),
         provider_format: "nvcf-nim".into(),
         required_env_vars: vec![],
-        provider_available: true,
     };
     assert!(cloud_execution_guard(&entry).is_ok());
 }
