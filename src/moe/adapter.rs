@@ -176,6 +176,8 @@ fn infer_family(
         "gemma4" => ModelFamily::Gemma4,
         "deepseek2" => ModelFamily::DeepSeek2,
         "llama" => ModelFamily::LlamaMoe,
+        "zaya" => ModelFamily::Zaya,
+        "glm4" | "glm4moe" => ModelFamily::Glm4,
         other => {
             return Err(HybridError::UnsupportedFormat(format!(
                 "unsupported GGUF architecture '{other}' in '{path}'"
@@ -193,4 +195,26 @@ fn infer_family(
     }
 
     Ok(inferred)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::infer_family;
+    use crate::types::ModelFamily;
+
+    #[test]
+    fn infer_family_supports_zaya_and_glm4_architectures() {
+        assert_eq!(
+            infer_family("zaya", None, "test.gguf").unwrap(),
+            ModelFamily::Zaya
+        );
+        assert_eq!(
+            infer_family("glm4", None, "test.gguf").unwrap(),
+            ModelFamily::Glm4
+        );
+        assert_eq!(
+            infer_family("glm4moe", None, "test.gguf").unwrap(),
+            ModelFamily::Glm4
+        );
+    }
 }

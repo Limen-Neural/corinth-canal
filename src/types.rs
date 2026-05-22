@@ -16,6 +16,8 @@ pub enum ModelFamily {
     Gemma4,
     DeepSeek2,
     LlamaMoe,
+    Zaya,
+    Glm4,
 }
 
 impl ModelFamily {
@@ -26,6 +28,8 @@ impl ModelFamily {
             Self::Gemma4 => "gemma4",
             Self::DeepSeek2 => "deepseek2",
             Self::LlamaMoe => "llama_moe",
+            Self::Zaya => "zaya",
+            Self::Glm4 => "glm4",
         }
     }
 }
@@ -139,4 +143,128 @@ pub struct ModelOutput {
     pub expert_weights: Option<Vec<f32>>,
     pub selected_experts: Option<Vec<usize>>,
     pub reasoning: Option<String>,
+}
+
+// ── Cloud model metadata ──────────────────────────────────────────────────
+
+/// Execution target for a model in the SAAQ lineup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelTarget {
+    Local,
+    Cloud,
+}
+
+/// Model architecture classification for lineup metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelArchitectureClass {
+    Dense,
+    Moe,
+}
+
+/// Metadata stub for a cloud-hosted model that cannot be executed locally.
+///
+/// Cloud models delegate execution to Dioscuri-Cloud. corinth-canal is
+/// responsible for recording the candidate in experiment manifests and
+/// fail-fast behaviour when the required cloud provider env vars are unset.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudModelSpec {
+    /// Directory-safe identifier used in artifact paths.
+    pub slug: String,
+    /// Model family for routing tensor selection.
+    pub family: Option<ModelFamily>,
+    /// Provider / model ID (e.g. `nvidia/nemotron-nano-4b`).
+    pub cloud_model_id: String,
+    /// Canonical source URL (model card or provider listing).
+    pub source_url: String,
+    /// Execution target.
+    pub target: ModelTarget,
+    /// Architecture class.
+    pub architecture: ModelArchitectureClass,
+    /// Known active parameter count (e.g. `"2.4B"`).
+    pub active_params: String,
+    /// Known total parameter count (e.g. `"8B"`).
+    pub total_params: String,
+    /// Expected provider / runtime format on the cloud side
+    /// (e.g. `"nvcf-nim"`, `"openai-compat"`, `"fp8-safetensors"`).
+    pub provider_format: String,
+    /// Environment variable names required for cloud execution.
+    /// corinth-canal checks these at startup; if any are unset, execution
+    /// fails fast with a diagnostic message. Values never appear in artifacts.
+    pub required_env_vars: Vec<String>,
+}
+
+impl CloudModelSpec {
+    /// Returns `true` when every env var in `required_env_vars` is set
+    /// to a non-empty string.
+    pub fn cloud_provider_available(&self) -> bool {
+        self.required_env_vars
+            .iter()
+            .all(|var| std::env::var(var).is_ok_and(|v| !v.is_empty()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CloudModelSpec, ModelArchitectureClass, ModelFamily, ModelTarget};
+
+    #[test]
+    fn model_family_slug_covers_new_variants() {
+        assert_eq!(ModelFamily::Zaya.slug(), "zaya");
+        assert_eq!(ModelFamily::Glm4.slug(), "glm4");
+    }
+
+    #[test]
+    fn cloud_model_spec_provider_availability_checks_env_vars() {
+        let missing = "CORINTH_CANAL_TEST_MISSING_PROVIDER_VAR";
+
+        let spec = CloudModelSpec {
+            slug: "test-cloud".into(),
+            family: Some(ModelFamily::Zaya),
+            cloud_model_id: "provider/test-cloud".into(),
+            source_url: "https://example.invalid/test-cloud".into(),
+            target: ModelTarget::Cloud,
+            architecture: ModelArchitectureClass::Moe,
+            active_params: "1B".into(),
+            total_params: "8B".into(),
+            provider_format: "openai-compat".into(),
+            required_env_vars: vec!["PATH".into(), missing.into()],
+        };
+        assert!(!spec.cloud_provider_available());
+
+        let local_dense = CloudModelSpec {
+            slug: "test-local".into(),
+            family: Some(ModelFamily::Glm4),
+            cloud_model_id: "provider/test-local".into(),
+            source_url: "https://example.invalid/test-local".into(),
+            target: ModelTarget::Local,
+            architecture: ModelArchitectureClass::Dense,
+            active_params: "3B".into(),
+            total_params: "3B".into(),
+            provider_format: "nvcf-nim".into(),
+            required_env_vars: vec!["PATH".into()],
+        };
+        assert!(local_dense.cloud_provider_available());
+    }
+
+    #[test]
+    fn cloud_model_spec_deserialization_requires_required_env_vars() {
+        let err = serde_json::from_str::<CloudModelSpec>(
+            r#"{
+                "slug":"test-cloud",
+                "family":"Glm4",
+                "cloud_model_id":"provider/test-cloud",
+                "source_url":"https://example.invalid/test-cloud",
+                "target":"cloud",
+                "architecture":"moe",
+                "active_params":"1B",
+                "total_params":"8B",
+                "provider_format":"openai-compat"
+            }"#,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("required_env_vars"));
+    }
 }

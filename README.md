@@ -65,6 +65,18 @@ Supported families in code:
 - `Gemma4`
 - `DeepSeek2`
 - `LlamaMoe`
+- `Zaya`
+- `Glm4`
+
+### Model onboarding and cloud lineup
+
+- `configs/saaq15_moe_lineup.toml` — shareable GGUF lineup template for SAAQ 1.5
+- `configs/saaq15_cloud_lineup.toml` — cloud model metadata stubs with fail-fast
+  env var guards (execution delegated to Dioscuri-Cloud)
+- `configs/safetensors_lineup.template.toml` — shareable safetensors lineup template for
+  manifest inspection (header-only, no tensor payload reads)
+- `docs/CLOUD_MODELS.md` — cloud model delegation model and provider reference
+- `docs/model_lineup.md` — rollout batch structure and required metadata
 
 ### Projection modes
 
@@ -101,6 +113,9 @@ compatibility columns.
 
 - `docs/ARCHITECTURE.md` — runtime architecture, module map, hidden control flow
 - `docs/RUN_PROFILES.md` — validated commands and per-run outputs
+- `docs/CLOUD_MODELS.md` — cloud model delegation model and provider reference
+- `docs/model_lineup.md` — rollout batch structure and required onboarding metadata
+- `docs/MODEL_SOURCE_VERIFICATION_CHECKLIST.md` — pre-onboarding source verification gate
 - `docs/PROMOTION_RULES.md` — module promotion rules
 - `docs/MODULE_STATUS.md` — current module stability/promotion status
 - `manifests/proven_components.toml` — machine-readable module status mirror
@@ -111,6 +126,7 @@ compatibility columns.
 - `examples/gpu_smoke_test.rs` — GPU temporal smoke validation
 - `examples/csv_replay.rs` — canonical telemetry CSV replay
 - `examples/telemetry_bridge.rs` — routing demonstration
+- `examples/safetensors_manifest.rs` — safetensors header inspection and manifest generation
 
 ## Validation outputs
 

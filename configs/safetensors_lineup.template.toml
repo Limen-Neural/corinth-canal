@@ -1,0 +1,57 @@
+# corinth-canal Safetensors manifest lineup template.
+#
+# Copy this file to `configs/safetensors_lineup.toml` and replace the
+# placeholder paths with your local safetensors model directories.
+# `configs/safetensors_lineup.toml` is gitignored — paths never leave
+# your machine.
+#
+# Batch manifest generation from this lineup is not yet wired into
+# `examples/safetensors_manifest.rs`. For now, run the example with
+# positional arguments:
+#   cargo run --example safetensors_manifest --no-default-features -- <path> <output.json>
+#
+# Fields:
+#   slug          directory-safe identifier (used in artifact paths)
+#   family        optional model family for tensor classification heuristics
+#                 one of: olmoe | qwen3_moe | gemma4 | deepseek2 | llama_moe | zaya | glm4
+#                 leave blank when no existing corinth-canal family matches
+#   path          absolute path to a .safetensors file, .safetensors.index.json,
+#                 or directory containing safetensors shards
+#   target        execution target: "local"
+#
+# ── Template entries — replace /absolute/path/to with your local paths ────
+
+# ── MET-55: nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16 (Dense, single shard) ──
+[[model]]
+slug = "nemotron_3_nano_4b"
+family = ""
+path = "/absolute/path/to/.models/safetensors/nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16/model.safetensors"
+target = "local"
+
+# ── MET-56: ibm-granite/granite-3.1-3b-a800m-base (MoE, 2 shards) ──
+[[model]]
+slug = "granite_3_1_3b_a800m"
+family = "qwen3_moe"
+path = "/absolute/path/to/.models/safetensors/ibm-granite/granite-3.1-3b-a800m-base"
+target = "local"
+
+# ── MET-58: arcee-ai/Trinity-Nano-Base (MoE, 7 shards) ──
+[[model]]
+slug = "trinity_nano_base"
+family = "qwen3_moe"
+path = "/absolute/path/to/.models/safetensors/arcee-ai/Trinity-Nano-Base"
+target = "local"
+
+# ── microsoft/Phi-tiny-MoE-instruct (MoE, 2 shards) ──
+[[model]]
+slug = "phi_tiny_moe_instruct"
+family = "qwen3_moe"
+path = "/absolute/path/to/.models/safetensors/microsoft/Phi-tiny-MoE-instruct"
+target = "local"
+
+# ── slowfastai/Moonlight-16B-A3B-bnb-4bit (MoE, 2 shards, bnb 4bit quant) ──
+[[model]]
+slug = "moonlight_16b_a3b_bnb_4bit"
+family = "deepseek2"
+path = "/absolute/path/to/.models/safetensors/slowfastai/Moonlight-16B-A3B-bnb-4bit"
+target = "local"

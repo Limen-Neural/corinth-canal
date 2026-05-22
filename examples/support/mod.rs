@@ -1,15 +1,21 @@
 //! Shared helper functions for the example binaries.
 
 pub mod config;
+pub mod lineup;
 pub mod observability;
 
 #[allow(unused_imports)]
 pub use config::RunConfig;
+pub use lineup::{
+    cloud_execution_guard, cloud_lineup_path_from_env, load_cloud_lineup, load_safetensors_lineup,
+    safetensors_lineup_path_from_env,
+};
 
 use corinth_canal::{
-    HeartbeatConfig, ModelFamily, SaaqUpdateRule, model::ModelConfig, moe::OlmoeRouter,
-    moe::RoutingMode, projector::ProjectionMode,
+    HeartbeatConfig, ModelFamily, SaaqUpdateRule, moe::OlmoeRouter, moe::RoutingMode,
 };
+#[cfg(feature = "cuda")]
+use corinth_canal::{model::ModelConfig, projector::ProjectionMode};
 use std::io::Error;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -34,6 +40,7 @@ pub struct ValidationModelSpec {
 }
 
 #[allow(dead_code)]
+#[cfg(feature = "cuda")]
 pub fn default_spiking_model_config(gguf_checkpoint_path: String, snn_steps: usize) -> ModelConfig {
     let probe = if gguf_checkpoint_path.trim().is_empty() {
         None
@@ -94,6 +101,8 @@ pub fn parse_family_slug(value: &str) -> Option<ModelFamily> {
         "gemma4" | "gemma_4" | "gemma" => Some(ModelFamily::Gemma4),
         "deepseek2" | "deepseek_v2" | "deepseek" => Some(ModelFamily::DeepSeek2),
         "llama" | "llama_moe" | "llama3_moe" => Some(ModelFamily::LlamaMoe),
+        "zaya" | "zaya1" | "zaya1_8b" => Some(ModelFamily::Zaya),
+        "glm4" | "glm_4" | "glm4moe" | "glm" => Some(ModelFamily::Glm4),
         _ => None,
     }
 }
@@ -320,6 +329,26 @@ pub fn discover_validation_models() -> Vec<ValidationModelSpec> {
             PathBuf::from(
                 "models/Llama-3.2-8X3B-MOE-Dark-Champion-GGUF/L3.2-8X3B-MOE-Dark-Champion-Inst-18.4B-uncen-ablit_D_AU-q5_k_m.gguf",
             ),
+        ),
+        (
+            "zaya1_8b_q8_0",
+            Some(ModelFamily::Zaya),
+            PathBuf::from("models/ZAYA1-8B-GGUF/ZAYA1-8B-Q8_0.gguf"),
+        ),
+        (
+            "glm46v_flash_q8_0",
+            Some(ModelFamily::Glm4),
+            PathBuf::from("models/GLM-4.6V-Flash-GGUF_Q8_0/GLM-4.6V-Flash-Q8_0.gguf"),
+        ),
+        (
+            "kimi_vl_a3b_q6_k",
+            Some(ModelFamily::DeepSeek2),
+            PathBuf::from("models/Kimi-VL-A3B-Instruct-GGUF_Q6_K/Kimi-VL-A3B-Instruct-Q6_K.gguf"),
+        ),
+        (
+            "marco_nano_base_q8_0",
+            Some(ModelFamily::Qwen3Moe),
+            PathBuf::from("models/Marco-Nano-Base-GGUF_Q8_0/Marco-Nano-Base.Q8_0.gguf"),
         ),
     ];
 

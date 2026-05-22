@@ -162,6 +162,21 @@ Supported families in code today:
 - `Gemma4`
 - `DeepSeek2`
 - `LlamaMoe`
+- `Zaya`
+- `Glm4`
+
+### Cloud model metadata
+
+`CloudModelSpec` (in `src/types.rs`) carries metadata stubs for cloud-hosted
+models that cannot be executed locally. Cloud execution is delegated to
+Dioscuri-Cloud. corinth-canal is responsible for candidate selection,
+manifest stamping, and fail-fast validation when required cloud provider env
+vars are unset — not for infrastructure provisioning.
+
+The cloud lineup lives in `configs/saaq15_cloud_lineup.toml`. Each entry
+records: `cloud_model_id`, `source_url`, architecture class, parameter counts,
+provider format, and the env var names required for cloud execution. No
+secrets or absolute paths are stored.
 
 ## Routing / projection modes
 

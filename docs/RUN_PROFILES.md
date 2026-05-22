@@ -98,11 +98,50 @@ actual `ggml_type` of `blk.0.attn_q.weight`, not on the filename suffix.
 The example also writes `<output_root>/synapse_diagnostic.json` for a structured
 record of the same fields.
 
+## Cloud model lineup
+
+Cloud model execution is delegated to Dioscuri-Cloud. corinth-canal is
+responsible for model selection, experiment metadata stamping, and fail-fast
+validation — not for infrastructure provisioning.
+
+### Cloud lineup config
+
+| Profile | Command |
+|---------|---------|
+| Validate cloud lineup metadata file | `cargo test --no-default-features cloud_lineup -- --nocapture` |
+
+Each cloud entry carries:
+
+- `cloud_model_id` — provider-qualified identifier passed to Dioscuri-Cloud
+- `source_url` — canonical model card
+- `target` — always `"cloud"`
+- `architecture` — `"moe"` or `"dense"`
+- `active_params` / `total_params` — informational parameter counts
+- `provider_format` — expected runtime format (`nvcf-nim`, `openai-compat`, `vertex-ai`, `watsonx-saas`, `fp8-safetensors`)
+- `required_env_vars` — env var names that must be set for execution
+
+`CLOUD_LINEUP_CONFIG` parsing and cloud execution guards currently live in
+`examples/support/mod.rs`. The main `just saaq` runner path is not yet wired to
+consume cloud lineup config directly.
+
 ## Safetensors manifest
 
 | Profile | Command |
 |---------|---------|
-| Inspect a Safetensors checkpoint or shard directory | `cargo run --example safetensors_manifest --no-default-features -- <checkpoint-or-dir> artifacts/safetensors_manifest.json` |
+| Inspect a single Safetensors checkpoint | `cargo run --example safetensors_manifest --no-default-features -- <checkpoint-or-dir> artifacts/safetensors_manifest.json` |
+
+The safetensors lineup template (`configs/safetensors_lineup.template.toml`) can be copied to `configs/safetensors_lineup.toml`; helper utilities in `examples/support/mod.rs` parse the local copy. The `safetensors_manifest` example
+currently uses positional CLI arguments for single-checkpoint inspection.
+
+Local entries onboarded:
+
+| Slug | Model | Shards |
+|------|-------|--------|
+| `nemotron_3_nano_4b` | nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16 | 1 |
+| `granite_3_1_3b_a800m` | ibm-granite/granite-3.1-3b-a800m-base | 2 |
+| `trinity_nano_base` | arcee-ai/Trinity-Nano-Base | 7 |
+| `phi_tiny_moe_instruct` | microsoft/Phi-tiny-MoE-instruct | 2 |
+| `moonlight_16b_a3b_bnb_4bit` | slowfastai/Moonlight-16B-A3B-bnb-4bit | 2 |
 
 Use Safetensors manifests when the goal is checkpoint anatomy: tensor names,
 dtypes, shapes, byte sizes, source shards, and recognizable MoE router/expert
@@ -172,3 +211,5 @@ Model families supported by the GGUF adapter layer:
 - `Gemma4`
 - `DeepSeek2`
 - `LlamaMoe`
+- `Zaya`
+- `Glm4`
