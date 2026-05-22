@@ -15,8 +15,9 @@
 #
 # Fields:
 #   slug                directory-safe identifier (used in artifact paths)
-#   family              model family for routing tensor selection
+#   family              optional model family for routing tensor selection
 #                       one of: olmoe | qwen3_moe | gemma4 | deepseek2 | llama_moe | zaya | glm4
+#                       leave blank when no existing corinth-canal family matches
 #   cloud_model_id      provider-qualified model identifier (passed to Dioscuri-Cloud)
 #   source_url          canonical model card or provider listing
 #   target              execution target: "cloud"
@@ -38,7 +39,7 @@
 # ── MET-55: nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16 (Dense, existing safetensors) ──
 [[model]]
 slug = "nemotron_3_nano_4b_cloud"
-family = "llama_moe"
+family = ""
 cloud_model_id = "nvidia/nvidia-nemotron-3-nano-4B-BF16"
 source_url = "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16"
 target = "cloud"
@@ -90,7 +91,7 @@ required_env_vars = ["TRINITY_NIM_ENDPOINT", "TRINITY_NIM_API_KEY"]
 # ── MET-59: nvidia/NVIDIA-Nemotron-3-Nano-8B-4K-BF16 (Dense) ──
 [[model]]
 slug = "nemotron_3_nano_8b_cloud"
-family = "llama_moe"
+family = ""
 cloud_model_id = "nvidia/NVIDIA-Nemotron-3-Nano-8B-4K-BF16"
 source_url = "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-8B-4K-BF16"
 target = "cloud"
