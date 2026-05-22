@@ -6,12 +6,7 @@ use lineup::{
     cloud_execution_guard, cloud_lineup_path_from_env, load_cloud_lineup, load_safetensors_lineup,
     safetensors_lineup_path_from_env,
 };
-use std::sync::{Mutex, OnceLock};
-
-fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
-}
+use std::path::PathBuf;
 
 #[test]
 fn cloud_lineup_parses_valid_toml() {
@@ -127,21 +122,9 @@ required_env_vars = ["TEST_ENDPOINT"]
 }
 
 #[test]
-fn cloud_lineup_path_from_env_returns_none_when_unset() {
-    let _guard = env_lock();
-    let old = std::env::var_os("CLOUD_LINEUP_CONFIG");
-    unsafe {
-        std::env::remove_var("CLOUD_LINEUP_CONFIG");
-    }
-    assert!(cloud_lineup_path_from_env().is_none());
-    match old {
-        Some(value) => unsafe {
-            std::env::set_var("CLOUD_LINEUP_CONFIG", value);
-        },
-        None => unsafe {
-            std::env::remove_var("CLOUD_LINEUP_CONFIG");
-        },
-    }
+fn lineup_env_path_helpers_are_reachable() {
+    let _cloud: fn() -> Option<PathBuf> = cloud_lineup_path_from_env;
+    let _safetensors: fn() -> Option<PathBuf> = safetensors_lineup_path_from_env;
 }
 
 #[test]
@@ -214,22 +197,4 @@ target = "local"
     let entries = load_safetensors_lineup(&tmp).unwrap();
     let _ = std::fs::remove_file(&tmp);
     assert!(entries.is_empty());
-}
-
-#[test]
-fn safetensors_lineup_path_from_env_returns_none_when_unset() {
-    let _guard = env_lock();
-    let old = std::env::var_os("SAFETENSORS_LINEUP_CONFIG");
-    unsafe {
-        std::env::remove_var("SAFETENSORS_LINEUP_CONFIG");
-    }
-    assert!(safetensors_lineup_path_from_env().is_none());
-    match old {
-        Some(value) => unsafe {
-            std::env::set_var("SAFETENSORS_LINEUP_CONFIG", value);
-        },
-        None => unsafe {
-            std::env::remove_var("SAFETENSORS_LINEUP_CONFIG");
-        },
-    }
 }

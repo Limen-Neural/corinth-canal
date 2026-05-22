@@ -101,12 +101,21 @@ impl RunConfig {
 
 fn validate_optional_lineups_from_env() {
     if let Some(path) = cloud_lineup_path_from_env() {
-        load_cloud_lineup(&path).unwrap_or_else(|err| {
+        let entries = load_cloud_lineup(&path).unwrap_or_else(|err| {
             panic!(
                 "CLOUD_LINEUP_CONFIG={} could not be loaded: {err}",
                 path.display()
             )
         });
+        for entry in &entries {
+            cloud_execution_guard(entry).unwrap_or_else(|err| {
+                panic!(
+                    "CLOUD_LINEUP_CONFIG={} failed validation for slug={}: {err}",
+                    path.display(),
+                    entry.slug
+                )
+            });
+        }
     }
 
     if let Some(path) = safetensors_lineup_path_from_env() {
