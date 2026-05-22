@@ -12,8 +12,9 @@
 #
 # Fields:
 #   slug          directory-safe identifier (used in artifact paths)
-#   family        model family for tensor classification heuristics
+#   family        optional model family for tensor classification heuristics
 #                 one of: olmoe | qwen3_moe | gemma4 | deepseek2 | llama_moe | zaya | glm4
+#                 leave blank when no existing corinth-canal family matches
 #   path          absolute path to a .safetensors file, .safetensors.index.json,
 #                 or directory containing safetensors shards
 #   target        execution target: "local"
@@ -23,7 +24,7 @@
 # ── MET-55: nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16 (Dense, single shard) ──
 [[model]]
 slug = "nemotron_3_nano_4b"
-family = "llama_moe"
+family = ""
 path = "/absolute/path/to/.models/safetensors/nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16/model.safetensors"
 target = "local"
 

@@ -39,13 +39,12 @@ CLOUD_LINEUP_CONFIG=configs/saaq15_cloud_lineup.toml
 When any `required_env_vars` entry is unset or empty during helper parsing:
 
 1. The parser emits a diagnostic to stderr listing the missing vars.
-2. The candidate is skipped — no partial execution is attempted.
+2. The candidate remains in the parsed lineup with `provider_available = false`.
 
 Example diagnostic:
 
 ```
-cloud_lineup: skipping slug=nemotron_3_nano_4b_cloud (nvidia/nvidia-nemotron-3-nano-4B-BF16):
-missing env vars: NEMOTRON_NIM_ENDPOINT, NEMOTRON_NIM_API_KEY
+cloud_lineup: provider unavailable for slug=nemotron_3_nano_4b_cloud (nvidia/nvidia-nemotron-3-nano-4B-BF16): missing env vars: NEMOTRON_NIM_ENDPOINT, NEMOTRON_NIM_API_KEY
 ```
 
 Main runner integration for cloud lineup metadata is intentionally separate.
