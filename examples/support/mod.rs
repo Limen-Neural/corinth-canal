@@ -222,7 +222,7 @@ pub fn load_cloud_lineup(path: &Path) -> Result<Vec<CloudModelEntry>, Box<dyn st
             family,
             cloud_model_id: entry.cloud_model_id,
             source_url: entry.source_url,
-            architecture: entry.architecture,
+            architecture,
             active_params: entry.active_params,
             total_params: entry.total_params,
             provider_format: entry.provider_format,
@@ -235,10 +235,10 @@ pub fn load_cloud_lineup(path: &Path) -> Result<Vec<CloudModelEntry>, Box<dyn st
 
 /// Fail-fast guard for cloud model execution.
 ///
-/// When `provider_available` is `false`, returns an error describing the
-/// missing env vars. Callers in the SAAQ runner should check this before
-/// attempting any cloud-backed forward passes so that the artifact manifest
-/// can record the skip reason.
+/// Re-checks `required_env_vars` at call time and returns an error
+/// describing any that are missing. Callers in the SAAQ runner should check
+/// this before attempting any cloud-backed forward passes so that the
+/// artifact manifest can record the skip reason.
 ///
 /// corinth-canal does not create cloud resources — it delegates execution
 /// to Dioscuri-Cloud. This guard only validates that the required env vars
@@ -1187,7 +1187,7 @@ family = "olmoe"
 cloud_model_id = "test/example-model"
 source_url = "https://example.com/model"
 target = "cloud"
-architecture = "moe"
+architecture = "MoE"
 active_params = "1B"
 total_params = "7B"
 provider_format = "nvcf-nim"
