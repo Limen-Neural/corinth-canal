@@ -16,13 +16,14 @@ use std::path::{Path, PathBuf};
 use corinth_canal::{ModelFamily, SaaqUpdateRule, moe::RoutingMode};
 use serde::Deserialize;
 
+use super::lineup::SafetensorsModelEntry;
 use super::{
-    ResolvedTelemetry, SafetensorsModelEntry, ValidationModelSpec, cloud_execution_guard,
-    cloud_lineup_path_from_env, discover_validation_models, env_flag, heartbeat_modes_for_matrix,
-    load_cloud_lineup, load_safetensors_lineup, model_family_override_from_env, parse_family_slug,
-    parse_routing_mode, prompt_profile_slug, prompt_text_for_profile, repeat_count_from_env,
-    resolve_telemetry_source, routing_mode_override_from_env, saaq_update_rule_from_env,
-    safetensors_lineup_path_from_env, ticks_from_env,
+    ResolvedTelemetry, ValidationModelSpec, cloud_execution_guard, cloud_lineup_path_from_env,
+    discover_validation_models, env_flag, heartbeat_modes_for_matrix, load_cloud_lineup,
+    load_safetensors_lineup, model_family_override_from_env, parse_family_slug, parse_routing_mode,
+    prompt_profile_slug, prompt_text_for_profile, repeat_count_from_env, resolve_telemetry_source,
+    routing_mode_override_from_env, saaq_update_rule_from_env, safetensors_lineup_path_from_env,
+    ticks_from_env,
 };
 
 /// Default output root for per-run artifacts when `VALIDATION_OUTPUT_ROOT`
