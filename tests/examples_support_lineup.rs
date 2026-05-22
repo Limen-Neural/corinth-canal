@@ -1,11 +1,17 @@
-#[path = "../examples/support/mod.rs"]
-mod support;
+#[path = "../examples/support/lineup.rs"]
+mod lineup;
 
 use corinth_canal::{ModelArchitectureClass, ModelFamily, ModelTarget};
-use support::{
+use lineup::{
     cloud_execution_guard, cloud_lineup_path_from_env, load_cloud_lineup, load_safetensors_lineup,
     safetensors_lineup_path_from_env,
 };
+use std::sync::{Mutex, OnceLock};
+
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+}
 
 #[test]
 fn cloud_lineup_parses_valid_toml() {
@@ -122,6 +128,7 @@ required_env_vars = ["TEST_ENDPOINT"]
 
 #[test]
 fn cloud_lineup_path_from_env_returns_none_when_unset() {
+    let _guard = env_lock();
     let old = std::env::var_os("CLOUD_LINEUP_CONFIG");
     unsafe {
         std::env::remove_var("CLOUD_LINEUP_CONFIG");
@@ -171,14 +178,16 @@ target = "local"
     .unwrap();
 
     let entries = load_safetensors_lineup(&tmp).unwrap();
-    let _ = std::fs::remove_file(&tmp);
-    let _ = std::fs::remove_file(&existing_file);
 
     assert_eq!(entries.len(), 1);
     let e = &entries[0];
     assert_eq!(e.slug, "test_st_model");
     assert_eq!(e.family, Some(ModelFamily::Olmoe));
+    assert_eq!(e.path, existing_file);
     assert_eq!(e.target, "local");
+
+    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(&existing_file);
 }
 
 #[test]
@@ -209,6 +218,7 @@ target = "local"
 
 #[test]
 fn safetensors_lineup_path_from_env_returns_none_when_unset() {
+    let _guard = env_lock();
     let old = std::env::var_os("SAFETENSORS_LINEUP_CONFIG");
     unsafe {
         std::env::remove_var("SAFETENSORS_LINEUP_CONFIG");
