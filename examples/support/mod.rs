@@ -147,7 +147,6 @@ pub fn load_cloud_lineup(path: &Path) -> Result<Vec<CloudModelSpec>, Box<dyn std
         active_params: String,
         total_params: String,
         provider_format: String,
-        #[serde(default)]
         required_env_vars: Vec<String>,
     }
 
@@ -182,6 +181,13 @@ pub fn load_cloud_lineup(path: &Path) -> Result<Vec<CloudModelSpec>, Box<dyn std
                 "cloud_lineup: unknown family '{}' for slug={}; leaving family inference to probe",
                 entry.family, entry.slug
             );
+        }
+        if entry.required_env_vars.is_empty() {
+            return Err(format!(
+                "cloud_lineup: required_env_vars must be non-empty for slug={}",
+                entry.slug
+            )
+            .into());
         }
         let spec = CloudModelSpec {
             slug: entry.slug.clone(),
@@ -234,6 +240,13 @@ pub fn load_cloud_lineup(path: &Path) -> Result<Vec<CloudModelSpec>, Box<dyn std
 /// *Goose agent (deepseek-v4-pro model) — implementing cloud execution guard
 /// for fail-fast behavior on missing provider configuration.*
 pub fn cloud_execution_guard(entry: &CloudModelSpec) -> Result<(), String> {
+    if entry.required_env_vars.is_empty() {
+        return Err(format!(
+            "cloud model '{}' ({}) cannot execute: required_env_vars is empty. \
+             Cloud lineup entries must declare credential env var names.",
+            entry.slug, entry.cloud_model_id
+        ));
+    }
     let unset: Vec<_> = entry
         .required_env_vars
         .iter()

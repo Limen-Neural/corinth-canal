@@ -82,7 +82,7 @@ fn cloud_execution_guard_passes_when_provider_available() {
         active_params: "1B".into(),
         total_params: "7B".into(),
         provider_format: "nvcf-nim".into(),
-        required_env_vars: vec![],
+        required_env_vars: vec!["PATH".into()],
     };
     assert!(cloud_execution_guard(&entry).is_ok());
 }
@@ -109,6 +109,7 @@ architecture = "dense"
 active_params = "100M"
 total_params = "100M"
 provider_format = "rest"
+required_env_vars = ["TEST_ENDPOINT"]
 "#,
     )
     .unwrap();
