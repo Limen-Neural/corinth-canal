@@ -17,7 +17,7 @@ use corinth_canal::{ModelFamily, SaaqUpdateRule, moe::RoutingMode};
 use serde::Deserialize;
 
 use super::{
-    ResolvedTelemetry, ValidationModelSpec, cloud_execution_guard, cloud_lineup_path_from_env,
+    ResolvedTelemetry, ValidationModelSpec, cloud_lineup_path_from_env,
     discover_validation_models, env_flag, heartbeat_modes_for_matrix, load_cloud_lineup,
     load_safetensors_lineup, model_family_override_from_env, parse_family_slug, parse_routing_mode,
     prompt_profile_slug, prompt_text_for_profile, repeat_count_from_env, resolve_telemetry_source,
@@ -101,21 +101,12 @@ impl RunConfig {
 
 fn validate_optional_lineups_from_env() {
     if let Some(path) = cloud_lineup_path_from_env() {
-        let entries = load_cloud_lineup(&path).unwrap_or_else(|err| {
+        load_cloud_lineup(&path).unwrap_or_else(|err| {
             panic!(
                 "CLOUD_LINEUP_CONFIG={} could not be loaded: {err}",
                 path.display()
             )
         });
-        for entry in &entries {
-            cloud_execution_guard(entry).unwrap_or_else(|err| {
-                panic!(
-                    "CLOUD_LINEUP_CONFIG={} failed validation for slug={}: {err}",
-                    path.display(),
-                    entry.slug
-                )
-            });
-        }
     }
 
     if let Some(path) = safetensors_lineup_path_from_env() {
