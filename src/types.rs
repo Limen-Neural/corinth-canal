@@ -208,9 +208,7 @@ impl CloudModelSpec {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CloudModelSpec, ModelArchitectureClass, ModelFamily, ModelTarget,
-    };
+    use super::{CloudModelSpec, ModelArchitectureClass, ModelFamily, ModelTarget};
 
     #[test]
     fn model_family_slug_covers_new_variants() {
